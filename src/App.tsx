@@ -73,6 +73,7 @@ const statusLabel: Record<Status, string> = {
   unpaid: 'Не оплачен',
   completed: 'Завершено',
   in_progress: 'В процессе',
+  paused: 'Пауза',
   annulled: 'Аннулирован',
 }
 
@@ -82,6 +83,7 @@ const statusClass: Record<string, string> = {
   completed: 'tag tag-green',
   pending: 'tag tag-amber',
   in_progress: 'tag tag-blue',
+  paused: 'tag tag-amber',
   debt: 'tag tag-red',
   unpaid: 'tag tag-red',
   archived: 'tag',
@@ -103,6 +105,22 @@ function App() {
   const store = useCrmStore(auth.authenticated)
   const [deliveryOpen, setDeliveryOpen] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  useEffect(() => {
+    const labelTables = () => {
+      document.querySelectorAll<HTMLTableElement>('.crm-table').forEach((table) => {
+        const headers = Array.from(table.querySelectorAll('thead th')).map((th) => th.textContent?.trim() ?? '')
+        table.querySelectorAll<HTMLTableRowElement>('tbody tr').forEach((row) => {
+          Array.from(row.children).forEach((cell, index) => {
+            if (headers[index]) cell.setAttribute('data-label', headers[index])
+          })
+        })
+      })
+    }
+    labelTables()
+    const timer = window.setTimeout(labelTables, 120)
+    return () => window.clearTimeout(timer)
+  }, [store.data, auth.authenticated])
 
   if (auth.loading) return <LoadingState />
 
@@ -1196,11 +1214,19 @@ function Lab({ store }: { store: Store }) {
 
 function Excavation({ store }: { store: Store }) {
   const [modalReport, setModalReport] = useState<ExcavationReport | null>(null)
-  const reports = store.data.excavation_reports.filter((item) => !item.archived && !item.annulled)
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const allReports = store.data.excavation_reports.filter((item) => !item.archived && !item.annulled)
+  const reports = allReports.filter((item) => {
+    const haystack = `${item.object_name} ${item.client_name} ${item.location} ${item.work_type}`.toLowerCase()
+    const matchesQuery = haystack.includes(query.trim().toLowerCase())
+    const matchesStatus = statusFilter === 'all' || item.status === statusFilter
+    return matchesQuery && matchesStatus
+  })
   const totals = aggregateExcavation(reports)
   const exportRows = reports.map((report) => {
     const computed = excavationTotals(report)
-    return { Дата: report.date, Объект: report.object_name, Клиент: report.client_name, Кубы: report.excavation_m3, Рейсы: report.trip_count, Доход: computed.totalIncome, Расход: computed.totalExpenses, Прибыль: computed.profit, Долг: computed.debt }
+    return { Дата: report.date, Объект: report.object_name, Клиент: report.client_name, Локация: report.location, 'Объем всего': computed.totalVolume, Выполнено: computed.completedVolume, Остаток: computed.remainingVolume, Договор: computed.totalContractAmount, Оплачено: computed.paidAmount, Расход: computed.totalExpenses, Прибыль: computed.profit, Долг: computed.debt }
   })
 
   return (
@@ -1222,11 +1248,52 @@ function Excavation({ store }: { store: Store }) {
         <Kpi title="Долг" value={money(totals.totalDebt)} tone="red" />
       </div>
       <div className="toolbar">
-        <button className="secondary"><Calendar size={18} /> Последние 30 дней</button>
-        <button className="secondary">Все заказчики</button>
-        <button className="secondary">Все объекты <ChevronDown size={16} /></button>
-        <button className="secondary">Все статусы</button>
+        <label className="search small">
+          <Search size={18} />
+          <input placeholder="Поиск котлована, клиента или локации..." value={query} onChange={(event) => setQuery(event.target.value)} />
+        </label>
+        <select className="secondary select-action" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="all">Все статусы</option>
+          <option value="active">Активные</option>
+          <option value="completed">Завершено</option>
+          <option value="paused">Пауза</option>
+          <option value="debt">Долг</option>
+        </select>
         {store.canManage && <button className="primary" onClick={() => setModalReport(emptyExcavation())}><Plus size={18} /> Новый отчет</button>}
+      </div>
+      <div className="kotlovan-cards">
+        {reports.map((report) => {
+          const computed = excavationTotals(report)
+          return (
+            <Card className="kotlovan-card" key={report.id}>
+              <div className="card-title">
+                <div>
+                  <span className={statusClass[report.status]}>{statusLabel[report.status]}</span>
+                  <h2><Link to={`/excavation/${report.id}`}>{report.object_name}</Link></h2>
+                  <p>{report.client_name} · {report.location || 'Локация не указана'}</p>
+                </div>
+                {store.canManage && (
+                  <div className="row-actions">
+                    <button className="icon-btn" onClick={() => setModalReport(report)}><Edit3 size={16} /></button>
+                    <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('excavation_reports', report.id, report.object_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>
+                  </div>
+                )}
+              </div>
+              <div className="mobile-progress">
+                <div><i style={{ width: `${computed.progress}%` }} /></div>
+                <span>Выполнено {numberRu(computed.completedVolume)} из {numberRu(computed.totalVolume)} м³</span>
+              </div>
+              <div className="kotlovan-metrics">
+                <Info label="Остаток" value={`${numberRu(computed.remainingVolume)} м³`} />
+                <Info label="Договор" value={money(computed.totalContractAmount)} />
+                <Info label="Оплачено" value={money(computed.paidAmount)} tone="green" />
+                <Info label="Долг" value={money(Math.max(computed.debt, 0))} tone="amber" />
+                <Info label="Расходы" value={money(computed.totalExpenses)} tone="red" />
+                <Info label="Прибыль" value={money(computed.profit)} tone={computed.profit >= 0 ? 'green' : 'red'} />
+              </div>
+            </Card>
+          )
+        })}
       </div>
       <div className="grid three">
         <ChartCard title="Доходы по дням" type="bar" dataKey="income" />
@@ -1235,8 +1302,8 @@ function Excavation({ store }: { store: Store }) {
           <h2>Кубы по объектам</h2>
           {reports.map((report) => (
             <div className="progress-row" key={report.id}>
-              <span>{report.object_name}</span><strong>{numberRu(report.excavation_m3)} м³</strong>
-              <div><i style={{ width: `${Math.min(100, report.excavation_m3 / 6)}%` }} /></div>
+              <span>{report.object_name}</span><strong>{numberRu(excavationTotals(report).completedVolume)} м³</strong>
+              <div><i style={{ width: `${excavationTotals(report).progress}%` }} /></div>
             </div>
           ))}
         </Card>
@@ -1244,7 +1311,7 @@ function Excavation({ store }: { store: Store }) {
       <Card>
         <div className="card-title"><h2>Последние операции</h2><button className="link-btn">Смотреть все</button></div>
         <table className="crm-table">
-          <thead><tr><th>Дата</th><th>Объект / котлован</th><th>Заказчик</th><th>Тип работы</th><th>Кубы</th><th>Рейсы</th><th>Техника</th><th>Прибыль</th><th>Статус</th><th></th></tr></thead>
+          <thead><tr><th>Дата</th><th>Объект / котлован</th><th>Заказчик</th><th>Локация</th><th>Всего</th><th>Выполнено</th><th>Остаток</th><th>Договор</th><th>Оплачено</th><th>Долг</th><th>Прибыль</th><th>Статус</th><th></th></tr></thead>
           <tbody>
             {reports.map((report) => {
               const computed = excavationTotals(report)
@@ -1253,10 +1320,13 @@ function Excavation({ store }: { store: Store }) {
                   <td>{new Date(report.date).toLocaleDateString('ru-RU')}</td>
                   <td><Link to={`/excavation/${report.id}`}>{report.object_name}</Link></td>
                   <td>{report.client_name}</td>
-                  <td><span className="pill blue">{report.work_type}</span></td>
-                  <td>{numberRu(report.excavation_m3)}</td>
-                  <td>{report.trip_count}</td>
-                  <td>{report.machinery}</td>
+                  <td>{report.location}</td>
+                  <td>{numberRu(computed.totalVolume)} м³</td>
+                  <td>{numberRu(computed.completedVolume)} м³</td>
+                  <td>{numberRu(computed.remainingVolume)} м³</td>
+                  <td>{money(computed.totalContractAmount)}</td>
+                  <td>{money(computed.paidAmount)}</td>
+                  <td className="amber-text">{money(Math.max(computed.debt, 0))}</td>
                   <td className="green-text">{money(computed.profit)}</td>
                   <td><span className={statusClass[report.status]}>{statusLabel[report.status]}</span></td>
                   <td>
@@ -1282,8 +1352,8 @@ function ExcavationDetail({ store }: { store: Store }) {
   const totals = excavationTotals(report)
   const excavationSections: ReportSection[] = [
     { title: 'Клиент и объект', items: [{ label: 'Заказчик', value: report.client_name }, { label: 'Телефон', value: report.client_phone }, { label: 'Адрес', value: report.location }, { label: 'Тип работ', value: report.work_type }] },
-    { title: 'Работы', items: [{ label: 'Выемка', value: `${numberRu(report.excavation_m3)} м³` }, { label: 'Засыпка', value: `${numberRu(report.backfill_m3)} м³` }, { label: 'Рейсы', value: report.trip_count }, { label: 'Техника', value: report.machinery }] },
-    { title: 'Финансы', items: [{ label: 'Доход', value: money(totals.totalIncome) }, { label: 'Расход', value: money(totals.totalExpenses) }, { label: 'Прибыль', value: money(totals.profit) }, { label: 'Долг', value: money(Math.max(totals.debt, 0)) }] },
+    { title: 'Работы', items: [{ label: 'Общий объем', value: `${numberRu(totals.totalVolume)} м³` }, { label: 'Выполнено', value: `${numberRu(totals.completedVolume)} м³` }, { label: 'Остаток', value: `${numberRu(totals.remainingVolume)} м³` }, { label: 'Техника', value: report.machinery }] },
+    { title: 'Финансы', items: [{ label: 'Сумма договора', value: money(totals.totalContractAmount) }, { label: 'Оплачено', value: money(totals.paidAmount) }, { label: 'Расход', value: money(totals.totalExpenses) }, { label: 'Прибыль', value: money(totals.profit) }, { label: 'Долг', value: money(Math.max(totals.debt, 0)) }] },
   ]
 
   return (
@@ -1299,8 +1369,8 @@ function ExcavationDetail({ store }: { store: Store }) {
       </div>
       <div className="grid three">
         <Card><h2>Клиент и локация</h2><Info label="Заказчик" value={report.client_name} /><Info label="Телефон" value={report.client_phone} /><Info label="Адрес объекта" value={report.location} /></Card>
-        <Card><h2>Сводка работ</h2><Info label="Объем выемки" value={`${numberRu(report.excavation_m3)} м³`} /><Info label="Рейсы" value={String(report.trip_count)} /><Info label="Тип работ" value={report.work_type} /></Card>
-        <Card><h2>Финансы</h2><Info label="Валовый доход" value={money(totals.totalIncome)} /><Info label="Расходы" value={money(totals.totalExpenses)} tone="red" /><Info label="Чистая прибыль" value={money(totals.profit)} tone="blue" /><Info label="Остаток долга" value={money(Math.max(totals.debt, 0))} tone="amber" /></Card>
+        <Card><h2>Сводка работ</h2><Info label="Общий объем" value={`${numberRu(totals.totalVolume)} м³`} /><Info label="Выполнено" value={`${numberRu(totals.completedVolume)} м³`} /><Info label="Остаток" value={`${numberRu(totals.remainingVolume)} м³`} /><div className="mobile-progress"><div><i style={{ width: `${totals.progress}%` }} /></div><span>{numberRu(totals.progress, 1)}%</span></div></Card>
+        <Card><h2>Финансы</h2><Info label="Сумма договора" value={money(totals.totalContractAmount)} /><Info label="Оплачено" value={money(totals.paidAmount)} tone="green" /><Info label="Расходы" value={money(totals.totalExpenses)} tone="red" /><Info label="Прибыль" value={money(totals.profit)} tone="blue" /><Info label="Остаток долга" value={money(Math.max(totals.debt, 0))} tone="amber" /></Card>
       </div>
       <div className="grid two wide-left">
         <Card>
@@ -1799,11 +1869,21 @@ function ExcavationModal({ report, onClose, onSave }: { report: ExcavationReport
         <Field label="Телефон" value={form.client_phone} onChange={(v) => set('client_phone', v)} />
         <Field label="Адрес / локация" value={form.location} onChange={(v) => set('location', v)} />
         <Field label="Дата" value={form.date} onChange={(v) => set('date', v)} type="date" />
-        <Field label="Статус" value={form.status} onChange={(v) => setForm({ ...form, status: v as Status })} />
+        <label className="field">
+          <span>Статус</span>
+          <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as Status })}>
+            <option value="active">Активный</option>
+            <option value="completed">Завершено</option>
+            <option value="paused">Пауза</option>
+            <option value="debt">Долг</option>
+          </select>
+        </label>
       </div>
       <h3>Параметры работ</h3>
       <Field label="Тип работы" value={form.work_type} onChange={(v) => set('work_type', v)} />
       <div className="form-grid three-cols">
+        <Field label="Общий объем проекта (м³)" value={form.total_volume_m3 ?? form.excavation_m3} onChange={(v) => set('total_volume_m3', v)} type="number" />
+        <Field label="Выполненный объем (м³)" value={form.completed_volume_m3 ?? form.excavation_m3} onChange={(v) => set('completed_volume_m3', v)} type="number" />
         <Field label="Кубы выемки (м³)" value={form.excavation_m3} onChange={(v) => set('excavation_m3', v)} type="number" />
         <Field label="Кубы обратной засыпки (м³)" value={form.backfill_m3} onChange={(v) => set('backfill_m3', v)} type="number" />
         <Field label="Цена за 1 м³ (сомони)" value={form.price_per_m3} onChange={(v) => set('price_per_m3', v)} type="number" />
@@ -1820,11 +1900,14 @@ function ExcavationModal({ report, onClose, onSave }: { report: ExcavationReport
         <Field label="Цена дизеля" value={form.diesel_price} onChange={(v) => set('diesel_price', v)} type="number" />
         <Field label="Аренда техники" value={form.machinery_rent} onChange={(v) => set('machinery_rent', v)} type="number" />
         <Field label="Прочие расходы" value={form.other_expenses} onChange={(v) => set('other_expenses', v)} type="number" />
+        <Field label="Расходы всего" value={form.expenses ?? totals.calculatedExpenses} onChange={(v) => set('expenses', v)} type="number" />
         <Field label="Полученная оплата" value={form.received_payment} onChange={(v) => set('received_payment', v)} type="number" />
+        <Field label="Оплачено по договору" value={form.paid_amount ?? form.received_payment} onChange={(v) => set('paid_amount', v)} type="number" />
         <Field label="Комментарий" value={form.comment} onChange={(v) => set('comment', v)} />
       </div>
       <div className="calc-strip">
-        <SummaryLine label="Доход" value={money(totals.totalIncome)} />
+        <SummaryLine label="Договор" value={money(totals.totalContractAmount)} />
+        <SummaryLine label="Остаток объема" value={`${numberRu(totals.remainingVolume)} м³`} />
         <SummaryLine label="Расход" value={money(totals.totalExpenses)} tone="red" />
         <SummaryLine label="Прибыль" value={money(totals.profit)} tone="green" />
         <SummaryLine label="Долг" value={money(totals.debt)} tone="amber" />
@@ -1833,7 +1916,7 @@ function ExcavationModal({ report, onClose, onSave }: { report: ExcavationReport
   )
 }
 
-const numericExcavationKeys = new Set<keyof ExcavationReport>(['excavation_m3', 'backfill_m3', 'price_per_m3', 'trip_count', 'price_per_trip', 'worker_salary', 'diesel_liters', 'diesel_price', 'machinery_rent', 'other_expenses', 'received_payment'])
+const numericExcavationKeys = new Set<keyof ExcavationReport>(['total_volume_m3', 'completed_volume_m3', 'excavation_m3', 'backfill_m3', 'price_per_m3', 'trip_count', 'price_per_trip', 'worker_salary', 'diesel_liters', 'diesel_price', 'machinery_rent', 'other_expenses', 'received_payment', 'paid_amount', 'expenses'])
 
 function emptyExcavation(): ExcavationReport {
   return {
@@ -1844,6 +1927,8 @@ function emptyExcavation(): ExcavationReport {
     client_phone: '',
     location: '',
     work_type: 'Выемка грунта',
+    total_volume_m3: 0,
+    completed_volume_m3: 0,
     excavation_m3: 0,
     backfill_m3: 0,
     price_per_m3: 0,
@@ -1858,6 +1943,8 @@ function emptyExcavation(): ExcavationReport {
     machinery_rent: 0,
     other_expenses: 0,
     received_payment: 0,
+    paid_amount: 0,
+    expenses: 0,
     comment: '',
     status: 'active',
   }

@@ -22,15 +22,22 @@ export const dailyTotals = (report: DailyReport) => {
 }
 
 export const excavationTotals = (report: ExcavationReport) => {
-  const workIncome = report.excavation_m3 * report.price_per_m3
+  const totalVolume = Math.max(report.total_volume_m3 ?? report.excavation_m3, 0)
+  const completedVolume = Math.max(report.completed_volume_m3 ?? report.excavation_m3, 0)
+  const remainingVolume = Math.max(totalVolume - completedVolume, 0)
+  const workIncome = completedVolume * report.price_per_m3
   const tripIncome = report.trip_count * report.price_per_trip
+  const totalContractAmount = totalVolume * report.price_per_m3
   const totalIncome = workIncome + tripIncome
   const dieselCost = report.diesel_liters * report.diesel_price
-  const totalExpenses = dieselCost + report.worker_salary + report.machinery_rent + report.other_expenses
-  const profit = totalIncome - totalExpenses
-  const debt = totalIncome - report.received_payment
+  const calculatedExpenses = dieselCost + report.worker_salary + report.machinery_rent + report.other_expenses
+  const totalExpenses = report.expenses ?? calculatedExpenses
+  const paidAmount = report.paid_amount ?? report.received_payment
+  const debt = totalContractAmount - paidAmount
+  const profit = paidAmount - totalExpenses
+  const progress = totalVolume ? Math.min(100, Math.max(0, (completedVolume / totalVolume) * 100)) : 0
 
-  return { workIncome, tripIncome, totalIncome, dieselCost, totalExpenses, profit, debt }
+  return { workIncome, tripIncome, totalIncome, totalContractAmount, paidAmount, totalVolume, completedVolume, remainingVolume, dieselCost, calculatedExpenses, totalExpenses, profit, debt, progress }
 }
 
 export const aggregateExcavation = (reports: ExcavationReport[]) =>
@@ -40,7 +47,7 @@ export const aggregateExcavation = (reports: ExcavationReport[]) =>
       acc.totalIncome += totals.totalIncome
       acc.totalExpenses += totals.totalExpenses
       acc.netProfit += totals.profit
-      acc.totalExcavation += report.excavation_m3
+      acc.totalExcavation += totals.completedVolume
       acc.totalBackfill += report.backfill_m3
       acc.totalTrips += report.trip_count
       acc.totalDieselCost += totals.dieselCost

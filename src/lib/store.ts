@@ -75,6 +75,13 @@ const normalizeData = (data: AppData): AppData => ({
       status: legacyStatus === 'completed' ? 'passed' : legacyStatus === 'in_progress' ? 'pending' : report.status,
     }
   }),
+  excavation_reports: data.excavation_reports.map((report) => ({
+    ...report,
+    total_volume_m3: report.total_volume_m3 ?? report.excavation_m3,
+    completed_volume_m3: report.completed_volume_m3 ?? report.excavation_m3,
+    paid_amount: report.paid_amount ?? report.received_payment,
+    expenses: report.expenses ?? report.diesel_liters * report.diesel_price + report.worker_salary + report.machinery_rent + report.other_expenses,
+  })),
   activity_logs: data.activity_logs.map((log) => ({
     ...log,
     module: moduleRu[log.module] ?? log.module,

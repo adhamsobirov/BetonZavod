@@ -1,5 +1,5 @@
 export type Role = 'admin' | 'manager' | 'accountant' | 'operator'
-export type Status = 'active' | 'pending' | 'debt' | 'archived' | 'paid' | 'unpaid' | 'completed' | 'in_progress' | 'annulled'
+export type Status = 'active' | 'pending' | 'debt' | 'archived' | 'paid' | 'unpaid' | 'completed' | 'in_progress' | 'paused' | 'annulled'
 export type LabStatus = 'pending' | 'passed' | 'failed'
 export type BarterAssetType = 'apartment' | 'car' | 'land' | 'equipment' | 'other'
 export type BarterAssetStatus = 'active' | 'partial' | 'written_off' | 'owned'
@@ -167,6 +167,8 @@ export type ExcavationReport = {
   client_phone: string
   location: string
   work_type: string
+  total_volume_m3?: number
+  completed_volume_m3?: number
   excavation_m3: number
   backfill_m3: number
   price_per_m3: number
@@ -181,6 +183,8 @@ export type ExcavationReport = {
   machinery_rent: number
   other_expenses: number
   received_payment: number
+  paid_amount?: number
+  expenses?: number
   comment: string
   status: Status
   archived?: boolean
