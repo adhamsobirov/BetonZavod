@@ -7,6 +7,7 @@ export type BarterAssetStatus = 'active' | 'partial' | 'written_off' | 'owned'
 export type Profile = {
   id: string
   full_name: string
+  login?: string
   role: Role
   email: string
   avatar_url?: string

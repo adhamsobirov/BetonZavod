@@ -41,13 +41,14 @@ import {
   WalletCards,
   X,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Link, Navigate, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom'
 import { aggregateExcavation, dailyTotals, excavationTotals, money, numberRu } from './lib/calculations'
 import { exportExcel, exportPdf, exportReportPdf, printReport, type ExportRow, type ReportSection } from './lib/export'
 import { useCrmStore } from './lib/store'
-import type { BarterAssetType, Client, DailyReport, DailyReportItem, ExcavationReport, Invoice, LabReport, Status } from './types'
+import { hasSupabaseEnv, supabase } from './lib/supabase'
+import type { BarterAssetType, Client, DailyReport, DailyReportItem, ExcavationReport, Invoice, LabReport, Profile, Status } from './types'
 import './App.css'
 
 const navItems = [
@@ -98,21 +99,30 @@ const chartRows = [
 ]
 
 function App() {
-  const store = useCrmStore()
-  const [authenticated, setAuthenticated] = useState(() => sessionStorage.getItem('crm-auth') === 'true' || localStorage.getItem('crm-auth') === 'true')
+  const auth = useAuth()
+  const store = useCrmStore(auth.authenticated)
   const [deliveryOpen, setDeliveryOpen] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
-  if (!authenticated) {
-    return <LoginPage onLogin={() => setAuthenticated(true)} />
+  if (auth.loading) return <LoadingState />
+
+  if (!auth.authenticated) {
+    return <LoginPage onLogin={auth.signIn} />
   }
 
   return (
     <div className="app-shell">
-      <Sidebar onDelivery={() => setDeliveryOpen(true)} onLogout={() => {
-        sessionStorage.removeItem('crm-auth')
-        localStorage.removeItem('crm-auth')
-        setAuthenticated(false)
-      }} />
+      <button className="mobile-menu-btn" aria-label="Открыть меню" onClick={() => setMobileNavOpen(true)}>
+        <LayoutDashboard size={20} /> Меню
+      </button>
+      <Sidebar
+        open={mobileNavOpen}
+        canManage={store.canManage}
+        onClose={() => setMobileNavOpen(false)}
+        onDelivery={() => setDeliveryOpen(true)}
+        onLogout={auth.signOut}
+      />
+      {mobileNavOpen && <button className="mobile-scrim" aria-label="Закрыть меню" onClick={() => setMobileNavOpen(false)} />}
       <div className="main-shell">
         <Topbar store={store} onDelivery={() => setDeliveryOpen(true)} />
         <main className="page-wrap">
@@ -138,9 +148,75 @@ function App() {
         </main>
       </div>
       {store.toast && <div className="toast">{store.toast}</div>}
-      {deliveryOpen && <ConcreteDeliveryModal store={store} onClose={() => setDeliveryOpen(false)} />}
+      {deliveryOpen && store.canManage && <ConcreteDeliveryModal store={store} onClose={() => setDeliveryOpen(false)} />}
     </div>
   )
+}
+
+function useAuth() {
+  const [authenticated, setAuthenticated] = useState(false)
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [loading, setLoading] = useState(hasSupabaseEnv)
+
+  const loadProfile = async () => {
+    if (!supabase) return null
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) return null
+    const { data } = await supabase.from('users_profile').select('*').eq('id', user.id).maybeSingle()
+    setProfile((data as Profile | null) ?? null)
+    return data as Profile | null
+  }
+
+  useEffect(() => {
+    let active = true
+    const init = async () => {
+      if (!hasSupabaseEnv || !supabase) {
+        setLoading(false)
+        return
+      }
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      if (session && active) {
+        await loadProfile()
+        setAuthenticated(true)
+      }
+      if (active) setLoading(false)
+    }
+    init()
+    const { data: listener } = supabase?.auth.onAuthStateChange((_event, session) => {
+      setAuthenticated(Boolean(session))
+      if (!session) setProfile(null)
+      if (session) void loadProfile()
+    }) ?? { data: null }
+    return () => {
+      active = false
+      listener?.subscription.unsubscribe()
+    }
+  }, [])
+
+  const signIn = async (login: string, password: string) => {
+    if (!hasSupabaseEnv || !supabase) {
+      return 'Supabase Auth не настроен. Добавьте VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY.'
+    }
+    const { data: email, error: loginError } = await supabase.rpc('login_email_for_username', { p_login: login })
+    if (loginError || !email) return 'Пользователь не найден'
+    const { error } = await supabase.auth.signInWithPassword({ email: String(email), password })
+    if (error) return 'Неверный логин или пароль'
+    await loadProfile()
+    setAuthenticated(true)
+    return true
+  }
+
+  const signOut = async () => {
+    if (supabase) await supabase.auth.signOut()
+    setAuthenticated(false)
+    setProfile(null)
+  }
+
+  return { authenticated, profile, loading, signIn, signOut }
 }
 
 type Store = ReturnType<typeof useCrmStore>
@@ -186,9 +262,9 @@ const labStatusClass = {
   failed: 'tag tag-red',
 }
 
-function Sidebar({ onLogout, onDelivery }: { onLogout: () => void; onDelivery: () => void }) {
+function Sidebar({ open, canManage, onClose, onLogout, onDelivery }: { open: boolean; canManage: boolean; onClose: () => void; onLogout: () => void; onDelivery: () => void }) {
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${open ? 'open' : ''}`}>
       <div className="brand">
         <div className="brand-mark">C</div>
         <div>
@@ -196,12 +272,12 @@ function Sidebar({ onLogout, onDelivery }: { onLogout: () => void; onDelivery: (
           <span>Управление поставками</span>
         </div>
       </div>
-      <button className="primary full" onClick={onDelivery}>
+      {canManage && <button className="primary full" onClick={() => { onDelivery(); onClose() }}>
         <Plus size={18} /> Дать бетон
-      </button>
+      </button>}
       <nav className="nav-list">
         {navItems.map((item) => (
-          <NavLink key={item.to} to={item.to} end={item.to === '/'}>
+          <NavLink key={item.to} to={item.to} end={item.to === '/'} onClick={onClose}>
             <item.icon size={20} />
             {item.label}
           </NavLink>
@@ -248,17 +324,17 @@ function Topbar({ store, onDelivery }: { store: Store; onDelivery: () => void })
         <button className="secondary" onClick={() => exportReportPdf('Сводный отчет CRM', sections, 'crm-summary')}>
           <Download size={18} /> Экспорт
         </button>
-        <button className="primary" onClick={onDelivery}>
+        {store.canManage && <button className="primary" onClick={onDelivery}>
           <Plus size={18} /> Дать бетон
-        </button>
+        </button>}
         <button className="icon-btn" aria-label="Уведомления">
           <Bell size={20} />
         </button>
         <div className="profile-pill">
           <UserCircle size={28} />
           <div>
-            <strong>Аддахан</strong>
-            <span>Администратор</span>
+            <strong>{store.data.profile.full_name}</strong>
+            <span>{store.data.profile.role === 'admin' ? 'Администратор' : 'Просмотр'}</span>
           </div>
         </div>
       </div>
@@ -266,19 +342,19 @@ function Topbar({ store, onDelivery }: { store: Store; onDelivery: () => void })
   )
 }
 
-function LoginPage({ onLogin }: { onLogin: () => void }) {
-  const [login, setLogin] = useState('admin')
-  const [password, setPassword] = useState('123456')
+function LoginPage({ onLogin }: { onLogin: (login: string, password: string) => Promise<true | string> }) {
+  const [login, setLogin] = useState('Adham')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (login !== 'admin' || password !== '123456') {
-      setError('Неверный логин или пароль')
-      return
-    }
-    sessionStorage.setItem('crm-auth', 'true')
-    onLogin()
+    setSubmitting(true)
+    setError('')
+    const result = await onLogin(login.trim(), password)
+    setSubmitting(false)
+    if (result !== true) setError(result)
   }
 
   return (
@@ -292,11 +368,11 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
           </div>
         </div>
         <h1>Вход в систему</h1>
-        <p>Временный доступ: логин admin, пароль 123456. Позже этот слой можно заменить на Supabase Auth.</p>
+        <p>Безопасный вход администратора через Supabase Auth.</p>
         <Field label="Логин" value={login} onChange={setLogin} />
         <Field label="Пароль" value={password} onChange={setPassword} type="password" />
         {error && <p className="error-text">{error}</p>}
-        <button className="primary full">Войти</button>
+        <button className="primary full" disabled={submitting}>{submitting ? 'Проверяем доступ...' : 'Войти'}</button>
       </form>
     </main>
   )
@@ -347,12 +423,12 @@ function Dashboard({ store, onDelivery }: { store: Store; onDelivery: () => void
       <PageHeader
         title="Панель управления"
         subtitle="Операционная сводка бетонного завода, финансов и проектов."
-        action={
+        action={store.canManage ? (
           <div className="toolbar compact">
             <button className="primary" onClick={onDelivery}><Plus size={18} /> Дать бетон</button>
             <Link className="secondary" to="/clients"><Users size={18} /> Новый клиент</Link>
           </div>
-        }
+        ) : undefined}
       />
       <div className="kpi-grid dashboard-kpis">
         <Kpi title="Доход" value={money(income)} />
@@ -369,10 +445,10 @@ function Dashboard({ store, onDelivery }: { store: Store; onDelivery: () => void
         <Card className="quick-actions-card">
           <h2>Быстрые действия</h2>
           <div className="quick-actions-grid">
-            <Link className="secondary" to="/clients"><Plus size={18} /> Новый клиент</Link>
-            <button className="secondary" onClick={onDelivery}><Plus size={18} /> Дать бетон</button>
-            <button className="secondary" onClick={() => store.notify('Откройте карточку клиента, чтобы добавить оплату')}><CreditCard size={18} /> Оплата</button>
-            <Link className="secondary" to="/invoices"><ReceiptText size={18} /> Счёт</Link>
+            {store.canManage && <Link className="secondary" to="/clients"><Plus size={18} /> Новый клиент</Link>}
+            {store.canManage && <button className="secondary" onClick={onDelivery}><Plus size={18} /> Дать бетон</button>}
+            {store.canManage && <button className="secondary" onClick={() => store.notify('Откройте карточку клиента, чтобы добавить оплату')}><CreditCard size={18} /> Оплата</button>}
+            {store.canManage && <Link className="secondary" to="/invoices"><ReceiptText size={18} /> Счёт</Link>}
             <Link className="secondary" to="/excavation"><Home size={18} /> Котлован</Link>
           </div>
         </Card>
@@ -479,11 +555,11 @@ function Clients({ store }: { store: Store }) {
       <PageHeader
         title="Управление клиентами"
         subtitle="Клиентская база, договоры, долги и поставки бетона."
-        action={
+        action={store.canManage ? (
           <button className="primary" onClick={() => setOpen(true)}>
             <Plus size={18} /> Создать клиента
           </button>
-        }
+        ) : undefined}
       />
       <div className="toolbar">
         <button className="secondary">
@@ -530,12 +606,16 @@ function Clients({ store }: { store: Store }) {
                 </td>
                 <td>
                   <div className="row-actions">
-                    <button className="icon-btn" onClick={() => setEditing(client)}>
-                      <Edit3 size={17} />
-                    </button>
-                    <AdminActionButton className="icon-btn" action={(password, reason) => store.api.adminDelete('clients', client.id, client.name, password, 'delete', reason)}>
-                      <Trash2 size={17} />
-                    </AdminActionButton>
+                    {store.canManage && (
+                      <>
+                        <button className="icon-btn" onClick={() => setEditing(client)}>
+                          <Edit3 size={17} />
+                        </button>
+                        <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('clients', client.id, client.name, 'delete', reason)}>
+                          <Trash2 size={17} />
+                        </AdminActionButton>
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -543,8 +623,8 @@ function Clients({ store }: { store: Store }) {
           </tbody>
         </table>
       </Card>
-      {open && <ClientModal onClose={() => setOpen(false)} onSave={store.api.addClient} />}
-      {editing && <ClientModal client={editing} onClose={() => setEditing(null)} onUpdate={store.api.updateClient} onSave={store.api.addClient} />}
+      {open && store.canManage && <ClientModal onClose={() => setOpen(false)} onSave={store.api.addClient} />}
+      {editing && store.canManage && <ClientModal client={editing} onClose={() => setEditing(null)} onUpdate={store.api.updateClient} onSave={store.api.addClient} />}
     </>
   )
 }
@@ -696,8 +776,12 @@ function ClientDetail({ store }: { store: Store }) {
                 <td className="purple-text">{money(row.barter_amount)}</td>
                 <td>{row.comment}</td>
                 <td>
-                  <AdminActionButton className="secondary" action={(password, reason) => store.api.adminDelete('client_reports', row.id, row.object_name, password, 'annul', reason)}>Аннулировать</AdminActionButton>
-                  <AdminActionButton className="icon-btn" action={(password, reason) => store.api.adminDelete('client_reports', row.id, row.object_name, password, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>
+                  {store.canManage && (
+                    <>
+                      <AdminActionButton className="secondary" action={(reason) => store.api.adminDelete('client_reports', row.id, row.object_name, 'annul', reason)}>Аннулировать</AdminActionButton>
+                      <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('client_reports', row.id, row.object_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
@@ -718,18 +802,18 @@ function ClientDetail({ store }: { store: Store }) {
           {payments.length ? payments.map((payment) => (
             <div className="asset-row" key={payment.id}>
               <CreditCard /> {payment.description} <strong>{money(payment.amount)}</strong>
-              <AdminActionButton className="icon-btn" action={(password, reason) => store.api.adminDelete('finance_transactions', payment.id, payment.description, password, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>
+              {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('finance_transactions', payment.id, payment.description, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
             </div>
           )) : <p>Оплаты пока не добавлены.</p>}
-          <button className="secondary" onClick={() => {
+          {store.canManage && <button className="secondary" onClick={() => {
             const value = Number(prompt('Сумма оплаты в сомони') ?? 0)
             if (value > 0) void store.api.addPayment(client.id, value)
-          }}>Добавить оплату</button>
+          }}>Добавить оплату</button>}
         </Card>
         <Card>
           <div className="card-title">
             <h2>Бартерные активы</h2>
-            <button className="primary" onClick={() => setAssetModalOpen(true)}><Plus size={18} /> Добавить актив</button>
+            {store.canManage && <button className="primary" onClick={() => setAssetModalOpen(true)}><Plus size={18} /> Добавить актив</button>}
           </div>
           {barterAssets.length ? (
             <div className="barter-table-wrap">
@@ -765,7 +849,7 @@ function ClientDetail({ store }: { store: Store }) {
                       <td>{asset.photos.length ? <img className="asset-thumb" src={asset.photos[0]} alt={asset.asset_name} /> : 'Нет фото'}</td>
                       <td>
                         <button className="secondary" onClick={() => store.notify('Детали актива доступны в карточке')}>Детали</button>
-                        <AdminActionButton className="icon-btn" action={(password, reason) => store.api.adminDelete('barter_assets', asset.id, asset.asset_name, password, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>
+                        {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('barter_assets', asset.id, asset.asset_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
                       </td>
                     </tr>
                   ))}
@@ -953,12 +1037,14 @@ function Daily({ store }: { store: Store }) {
         <Card>
           <div className="card-title">
             <h2>Операции</h2>
-            <button
-              className="link-btn"
-              onClick={() => setReport((current) => current ? ({ ...current, items: [...current.items, { id: crypto.randomUUID(), client_name: '', object_name: '', concrete_grade: '', volume_m3: 0, price: 0 }] }) : current)}
-            >
-              <Plus size={16} /> Добавить строку
-            </button>
+            {store.canManage && (
+              <button
+                className="link-btn"
+                onClick={() => setReport((current) => current ? ({ ...current, items: [...current.items, { id: crypto.randomUUID(), client_name: '', object_name: '', concrete_grade: '', volume_m3: 0, price: 0 }] }) : current)}
+              >
+                <Plus size={16} /> Добавить строку
+              </button>
+            )}
           </div>
           <table className="crm-table editable">
             <thead><tr><th>Клиент</th><th>Объект</th><th>Марка</th><th>м³</th><th>Цена</th><th>Сумма</th></tr></thead>
@@ -1002,8 +1088,8 @@ function Daily({ store }: { store: Store }) {
         <ExportButtons title="Ежедневный отчет" rows={rows} filename="daily-report" />
         <button className="secondary" onClick={() => exportReportPdf('Ежедневный отчет', dailySections, 'daily-report', { subtitle: new Date(report.date).toLocaleDateString('ru-RU') })}><FileText size={18} /> PDF</button>
         <button className="secondary" onClick={() => printReport('Ежедневный отчет', dailySections, { subtitle: new Date(report.date).toLocaleDateString('ru-RU') })}><Printer size={18} /> Печать</button>
-        <AdminActionButton className="secondary" action={(password, reason) => store.api.adminDelete('daily_reports', report.id, report.date, password, 'delete', reason)}><Trash2 size={18} /> Удалить</AdminActionButton>
-        <button className="primary" onClick={() => store.api.saveDaily(report)}>Сохранить</button>
+        {store.canManage && <AdminActionButton className="secondary" action={(reason) => store.api.adminDelete('daily_reports', report.id, report.date, 'delete', reason)}><Trash2 size={18} /> Удалить</AdminActionButton>}
+        {store.canManage && <button className="primary" onClick={() => store.api.saveDaily(report)}>Сохранить</button>}
       </div>
     </>
   )
@@ -1018,7 +1104,7 @@ function Invoices({ store }: { store: Store }) {
 
   return (
     <>
-      <PageHeader title="Счета" subtitle="Создание, печать и контроль оплаты счетов." action={<button className="primary" onClick={() => setOpen(true)}><Plus size={18} /> Создать счёт</button>} />
+      <PageHeader title="Счета" subtitle="Создание, печать и контроль оплаты счетов." action={store.canManage ? <button className="primary" onClick={() => setOpen(true)}><Plus size={18} /> Создать счёт</button> : undefined} />
       <Card>
         <table className="crm-table">
           <thead><tr><th>№ счета</th><th>Клиент</th><th>Дата</th><th>Срок</th><th>Сумма</th><th>Статус</th><th>Действия</th></tr></thead>
@@ -1035,8 +1121,8 @@ function Invoices({ store }: { store: Store }) {
                   <div className="row-actions">
                     <button className="secondary" onClick={() => printReport(`Счёт ${row.number}`, [{ title: 'Информация счета', items: [{ label: 'Клиент', value: row.clientName }, { label: 'Дата', value: row.date }, { label: 'Срок', value: row.due_date }, { label: 'Сумма', value: money(row.amount) }, { label: 'Статус', value: statusLabel[row.status] }] }], { client: row.clientName })}><Printer size={16} /> Печать</button>
                     <button className="secondary" onClick={() => exportReportPdf(`Счёт ${row.number}`, [{ title: 'Информация счета', items: [{ label: 'Клиент', value: row.clientName }, { label: 'Дата', value: row.date }, { label: 'Срок', value: row.due_date }, { label: 'Сумма', value: money(row.amount) }, { label: 'Статус', value: statusLabel[row.status] }] }], row.number, { client: row.clientName })}><Download size={16} /> PDF</button>
-                    {row.status === 'unpaid' && <button className="primary" onClick={() => store.api.markInvoicePaid(row.id)}>Оплатить</button>}
-                    <AdminActionButton className="icon-btn" action={(password, reason) => store.api.adminDelete('invoices', row.id, row.number, password, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>
+                    {store.canManage && row.status === 'unpaid' && <button className="primary" onClick={() => store.api.markInvoicePaid(row.id)}>Оплатить</button>}
+                    {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('invoices', row.id, row.number, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
                   </div>
                 </td>
               </tr>
@@ -1044,7 +1130,7 @@ function Invoices({ store }: { store: Store }) {
           </tbody>
         </table>
       </Card>
-      {open && <InvoiceModal store={store} onClose={() => setOpen(false)} />}
+      {open && store.canManage && <InvoiceModal store={store} onClose={() => setOpen(false)} />}
     </>
   )
 }
@@ -1065,7 +1151,7 @@ function Lab({ store }: { store: Store }) {
       <PageHeader
         title="Лаборатория"
         subtitle="Контроль качества бетона, образцы, протоколы и результаты испытаний."
-        action={<div className="toolbar compact"><ExportButtons title="Лаборатория" rows={exportRows} filename="lab-reports" /><button className="primary" onClick={() => setOpen(true)}><Plus size={18} /> Добавить тест</button></div>}
+        action={<div className="toolbar compact"><ExportButtons title="Лаборатория" rows={exportRows} filename="lab-reports" />{store.canManage && <button className="primary" onClick={() => setOpen(true)}><Plus size={18} /> Добавить тест</button>}</div>}
       />
       <div className="kpi-grid four">
         <Kpi title="Всего тестов" value={numberRu(totals.all)} />
@@ -1095,14 +1181,14 @@ function Lab({ store }: { store: Store }) {
                 <td><span className={labStatusClass[row.status]}>{labStatusLabel[row.status]}</span></td>
                 <td>
                   <button className="secondary" onClick={() => setDetail(row)}>Детали</button>
-                  <AdminActionButton className="icon-btn" action={(password, reason) => store.api.adminDelete('lab_reports', row.id, row.object_name, password, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>
+                  {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('lab_reports', row.id, row.object_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </Card>
-      {open && <LabModal store={store} onClose={() => setOpen(false)} />}
+      {open && store.canManage && <LabModal store={store} onClose={() => setOpen(false)} />}
       {detail && <LabDetailModal report={detail} store={store} onClose={() => setDetail(null)} />}
     </>
   )
@@ -1140,7 +1226,7 @@ function Excavation({ store }: { store: Store }) {
         <button className="secondary">Все заказчики</button>
         <button className="secondary">Все объекты <ChevronDown size={16} /></button>
         <button className="secondary">Все статусы</button>
-        <button className="primary" onClick={() => setModalReport(emptyExcavation())}><Plus size={18} /> Новый отчет</button>
+        {store.canManage && <button className="primary" onClick={() => setModalReport(emptyExcavation())}><Plus size={18} /> Новый отчет</button>}
       </div>
       <div className="grid three">
         <ChartCard title="Доходы по дням" type="bar" dataKey="income" />
@@ -1174,8 +1260,8 @@ function Excavation({ store }: { store: Store }) {
                   <td className="green-text">{money(computed.profit)}</td>
                   <td><span className={statusClass[report.status]}>{statusLabel[report.status]}</span></td>
                   <td>
-                    <button className="icon-btn" onClick={() => setModalReport(report)}><Edit3 size={16} /></button>
-                    <AdminActionButton className="icon-btn" action={(password, reason) => store.api.adminDelete('excavation_reports', report.id, report.object_name, password, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>
+                    {store.canManage && <button className="icon-btn" onClick={() => setModalReport(report)}><Edit3 size={16} /></button>}
+                    {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('excavation_reports', report.id, report.object_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
                   </td>
                 </tr>
               )
@@ -1183,7 +1269,7 @@ function Excavation({ store }: { store: Store }) {
           </tbody>
         </table>
       </Card>
-      {modalReport && <ExcavationModal report={modalReport} onClose={() => setModalReport(null)} onSave={store.api.saveExcavation} />}
+      {modalReport && store.canManage && <ExcavationModal report={modalReport} onClose={() => setModalReport(null)} onSave={store.api.saveExcavation} />}
     </>
   )
 }
@@ -1249,10 +1335,10 @@ function SettingsPage({ store }: { store: Store }) {
           <h2>Пользователь</h2>
           <Info label="Имя" value={store.data.profile.full_name} />
           <Info label="Email" value={store.data.profile.email} />
-          <Info label="Роль" value="Администратор" />
-          <AdminActionButton className="secondary" action={(password, reason) => store.api.clearTestData(password, reason || 'Очистка тестовых данных')}>
+          <Info label="Роль" value={store.data.profile.role === 'admin' ? 'Администратор' : 'Просмотр'} />
+          {store.canManage && <AdminActionButton className="secondary" action={(reason) => store.api.clearTestData(reason || 'Очистка тестовых данных')}>
             <Trash2 size={18} /> Очистить тестовые данные
-          </AdminActionButton>
+          </AdminActionButton>}
         </Card>
       </div>
       <Card>
@@ -1792,34 +1878,24 @@ function Modal({ title, subtitle, children, onClose, onSubmit }: { title: string
   )
 }
 
-function AdminActionButton({ children, className, action }: { children: ReactNode; className: string; action: (password: string, reason: string) => Promise<unknown> | unknown }) {
+function AdminActionButton({ children, className, action }: { children: ReactNode; className: string; action: (reason: string) => Promise<unknown> | unknown }) {
   const [open, setOpen] = useState(false)
-  const [password, setPassword] = useState('')
   const [reason, setReason] = useState('')
-  const [error, setError] = useState('')
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (password !== '123456') {
-      setError('Неверный пароль администратора')
-      return
-    }
-    await action(password, reason)
+    await action(reason)
     setOpen(false)
-    setPassword('')
     setReason('')
-    setError('')
   }
 
   return (
     <>
       <button type="button" className={className} onClick={() => setOpen(true)}>{children}</button>
       {open && (
-        <Modal title="Подтвердите удаление" subtitle="Это действие нельзя отменить. Введите пароль администратора." onClose={() => setOpen(false)} onSubmit={submit}>
-          <div className="form-grid two-cols">
-            <Field label="Пароль администратора" value={password} onChange={setPassword} type="password" />
+        <Modal title="Подтвердите удаление" subtitle="Это действие нельзя отменить. Доступ проверяется через роль администратора в Supabase." onClose={() => setOpen(false)} onSubmit={submit}>
+          <div className="form-grid">
             <Field label="Причина" value={reason} onChange={setReason} placeholder="Необязательно" />
           </div>
-          {error && <p className="error-text">{error}</p>}
         </Modal>
       )}
     </>

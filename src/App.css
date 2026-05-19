@@ -3,6 +3,18 @@
   min-height: 100vh;
 }
 
+html,
+body,
+#root {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+.mobile-menu-btn,
+.mobile-scrim {
+  display: none;
+}
+
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
@@ -961,6 +973,227 @@
 
   .timeline-list {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  h1 {
+    font-size: 30px;
+    line-height: 1.12;
+  }
+
+  h2 {
+    font-size: 22px;
+  }
+
+  .mobile-menu-btn {
+    display: inline-flex;
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 50;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid #cfd7e7;
+    border-radius: 12px;
+    background: #fff;
+    color: var(--text);
+    padding: 0 12px;
+    font-weight: 800;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+  }
+
+  .mobile-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 35;
+    border: 0;
+    background: rgba(15, 23, 42, 0.38);
+  }
+
+  .sidebar {
+    width: min(86vw, 320px);
+    transform: translateX(-105%);
+    transition: transform 0.22s ease;
+    z-index: 45;
+    padding: 24px 18px;
+    overflow-y: auto;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .nav-list a,
+  .sidebar-foot a,
+  .sidebar-foot button {
+    min-height: 46px;
+    font-size: 15px;
+  }
+
+  .main-shell {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .topbar {
+    min-height: 80px;
+    height: auto;
+    padding: 12px 12px 12px 112px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .search,
+  .search.small {
+    order: 2;
+    width: 100%;
+    height: 44px;
+    margin-left: 0;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .profile-pill {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .page-wrap {
+    width: 100%;
+    padding: 24px 12px 56px;
+  }
+
+  .page-header,
+  .detail-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .toolbar,
+  .toolbar.compact,
+  .bottom-bar,
+  .row-actions,
+  .card-title {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .primary,
+  .secondary,
+  .icon-btn,
+  .link-btn {
+    min-height: 46px;
+  }
+
+  .toolbar .primary,
+  .toolbar .secondary,
+  .bottom-bar .primary,
+  .bottom-bar .secondary {
+    flex: 1 1 auto;
+  }
+
+  .grid,
+  .grid.two,
+  .grid.three,
+  .two,
+  .three,
+  .wide-left,
+  .daily-grid,
+  .kpi-grid,
+  .kpi-grid.four,
+  .kpi-grid.excavation-kpis,
+  .dashboard-kpis,
+  .form-grid,
+  .form-grid.two-cols,
+  .form-grid.three-cols,
+  .role-grid,
+  .timeline-list {
+    grid-template-columns: 1fr !important;
+  }
+
+  .card {
+    padding: 18px;
+    border-radius: 14px;
+    overflow-x: auto;
+  }
+
+  .crm-table {
+    min-width: 720px;
+  }
+
+  .clients-table,
+  .compact-table {
+    min-width: 760px;
+  }
+
+  .editable input,
+  .field input,
+  .field select,
+  .field textarea {
+    min-height: 44px;
+  }
+
+  .modal-card {
+    width: calc(100vw - 24px);
+    max-height: 92vh;
+    border-radius: 16px;
+  }
+
+  .modal-body {
+    padding: 18px;
+  }
+
+  .modal-card header,
+  .modal-card footer {
+    padding: 16px 18px;
+  }
+
+  .modal-card footer {
+    flex-wrap: wrap;
+  }
+
+  .login-screen {
+    min-height: 100svh;
+    padding: 18px;
+  }
+
+  .login-card {
+    width: 100%;
+    padding: 24px;
+    border-radius: 18px;
+  }
+
+  .toast {
+    right: 12px;
+    left: 12px;
+    bottom: 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .topbar {
+    padding-left: 96px;
+  }
+
+  .top-actions .primary,
+  .top-actions .secondary {
+    width: 100%;
+  }
+
+  .profile-pill {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 

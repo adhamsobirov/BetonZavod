@@ -3,7 +3,8 @@ import type { AppData } from '../types'
 export const seedData: AppData = {
   profile: {
     id: '11111111-1111-4111-8111-111111111111',
-    full_name: 'Аддахан',
+    full_name: 'Адхам',
+    login: 'Adham',
     role: 'admin',
     email: 'admin@concretecore.local',
     avatar_url: '',

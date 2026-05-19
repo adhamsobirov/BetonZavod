@@ -29,9 +29,10 @@ const normalizeData = (data: AppData): AppData => ({
   ...data,
   profile: {
     ...data.profile,
-    full_name: 'Аддахан',
-    role: 'admin',
-    email: 'admin@concretecore.local',
+    full_name: data.profile.full_name ?? 'Адхам',
+    login: data.profile.login ?? 'Adham',
+    role: data.profile.role ?? 'operator',
+    email: data.profile.email ?? '',
   },
   barter_assets: (data.barter_assets ?? []).map((asset) => {
     const remaining = Math.max(asset.remaining_amount ?? asset.market_value - (asset.used_amount ?? 0), 0)
@@ -154,8 +155,8 @@ const tableLabel: Partial<Record<MutableTable, string>> = {
   activity_logs: 'запись журнала',
 }
 
-export function useCrmStore() {
-  const [data, setData] = useState<AppData>(() => readLocal())
+export function useCrmStore(enabled = true) {
+  const [data, setData] = useState<AppData>(() => (hasSupabaseEnv ? normalizeData(seedData) : readLocal()))
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
 
@@ -163,37 +164,36 @@ export function useCrmStore() {
     setToast(message)
     window.setTimeout(() => setToast(''), 2600)
   }, [])
+  const canManage = data.profile.role === 'admin'
 
   useEffect(() => {
     let active = true
     const load = async () => {
+      if (!enabled) {
+        setLoading(false)
+        return
+      }
       if (!hasSupabaseEnv || !supabase) {
         setLoading(false)
         return
       }
 
       const next = { ...seedData }
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-      let supabaseUser = user
-      if (!supabaseUser) {
-        const { data: anonymousSession } = await supabase.auth.signInAnonymously()
-        supabaseUser = anonymousSession.user
-      }
       for (const table of tableNames) {
         const { data: rows, error } = await supabase.from(table).select('*').order('created_at', { ascending: false })
         if (!error && rows && active) {
           ;(next as unknown as Record<string, unknown>)[table] = rows
         }
       }
+      const {
+        data: { user: supabaseUser },
+      } = await supabase.auth.getUser()
       if (supabaseUser) {
         const { data: profile } = await supabase.from('users_profile').select('*').eq('id', supabaseUser.id).maybeSingle()
         if (profile) next.profile = profile
       }
       if (active) {
-        setData(next)
-        writeLocal(next)
+        setData(normalizeData(next))
         setLoading(false)
       }
     }
@@ -201,10 +201,10 @@ export function useCrmStore() {
     return () => {
       active = false
     }
-  }, [])
+  }, [enabled])
 
   useEffect(() => {
-    if (!loading) writeLocal(data)
+    if (!hasSupabaseEnv && !loading) writeLocal(data)
   }, [data, loading])
 
   const saveRow = useCallback(async (table: keyof AppData, row: Record<string, unknown>) => {
@@ -218,6 +218,7 @@ export function useCrmStore() {
   const api = useMemo(
     () => ({
       addClient: async (client: Omit<Client, 'id' | 'updated_at'>) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const initialCash = Math.max(client.total_paid ?? 0, 0)
         const row = { ...client, id: id(), updated_at: now(), total_supplied_m3: 0, total_paid: initialCash, cash_available: initialCash, total_barter_value: 0 }
         setData((current) => ({ ...current, clients: [row, ...current.clients] }))
@@ -225,24 +226,28 @@ export function useCrmStore() {
         notify('Клиент сохранен')
       },
       updateClient: async (client: Client) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const row = { ...client, updated_at: now() }
         setData((current) => ({ ...current, clients: current.clients.map((item) => (item.id === row.id ? row : item)) }))
         await saveRow('clients', row)
         notify('Клиент обновлен')
       },
       archiveClient: async (rowId: string) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         if (!confirm('Архивировать клиента?')) return
         setData((current) => ({ ...current, clients: current.clients.map((item) => (item.id === rowId ? { ...item, archived: true } : item)) }))
         await archiveRow('clients', rowId)
         notify('Клиент архивирован')
       },
       addFinance: async (transaction: Omit<FinanceTransaction, 'id'>) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const row = { ...transaction, id: id() }
         setData((current) => ({ ...current, finance_transactions: [row, ...current.finance_transactions] }))
         await saveRow('finance_transactions', row)
         notify('Транзакция сохранена')
       },
       addBarterAsset: async (asset: Omit<BarterAsset, 'id' | 'used_amount' | 'remaining_amount' | 'status' | 'created_at' | 'updated_at'>) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         if (!asset.type || !asset.market_value || asset.market_value <= 0) {
           notify('Укажите тип и рыночную стоимость бартерного актива')
           return
@@ -271,6 +276,7 @@ export function useCrmStore() {
         notify('Бартерный актив добавлен')
       },
       addConcreteDelivery: async (delivery: Omit<ClientReport, 'id' | 'amount' | 'paid_amount' | 'barter_amount' | 'cash_amount'> & { price_per_m3: number }) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const client = data.clients.find((item) => item.id === delivery.client_id)
         if (!client) return
         const concreteAmount = delivery.volume_m3 * delivery.price_per_m3
@@ -354,6 +360,7 @@ export function useCrmStore() {
         notify(cashDebt > 0 || actualCoveredBarter < barterAmount ? 'Накладная сохранена, есть долг по наличным или бартеру' : 'Накладная бетона сохранена')
       },
       addPayment: async (clientId: string, amount: number, date = new Date().toISOString().slice(0, 10), description = 'Оплата клиента') => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const client = data.clients.find((item) => item.id === clientId)
         if (!client || amount <= 0) return
         const row: FinanceTransaction = { id: id(), client_id: clientId, date, category: 'Оплата', type: 'income', description, amount, status: 'paid' }
@@ -377,18 +384,21 @@ export function useCrmStore() {
         notify('Оплата добавлена')
       },
       saveDaily: async (report: DailyReport) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const row = { ...report, saved_at: now() }
         setData((current) => ({ ...current, daily_reports: [row, ...current.daily_reports.filter((item) => item.id !== row.id)] }))
         await saveRow('daily_reports', row)
         notify('Ежедневный отчет сохранен')
       },
       addInvoice: async (invoice: Omit<Invoice, 'id'>) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const row = { ...invoice, id: id() }
         setData((current) => ({ ...current, invoices: [row, ...current.invoices] }))
         await saveRow('invoices', row)
         notify('Счет создан')
       },
       markInvoicePaid: async (invoiceId: string) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const invoice = data.invoices.find((item) => item.id === invoiceId)
         if (!invoice || invoice.status === 'paid') return
         const payment: FinanceTransaction = {
@@ -417,12 +427,14 @@ export function useCrmStore() {
         notify('Счет отмечен как оплаченный')
       },
       addLabReport: async (report: Omit<LabReport, 'id'>) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const row = { ...report, id: id() }
         setData((current) => ({ ...current, lab_reports: [row, ...current.lab_reports] }))
         await saveRow('lab_reports', row)
         notify('Лабораторный отчет сохранен')
       },
       saveExcavation: async (report: ExcavationReport) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const row = report.id ? report : { ...report, id: id() }
         setData((current) => ({
           ...current,
@@ -432,6 +444,7 @@ export function useCrmStore() {
         notify('Отчет по котловану сохранен')
       },
       archiveExcavation: async (rowId: string) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         if (!confirm('Архивировать отчет по котловану?')) return
         setData((current) => ({
           ...current,
@@ -440,17 +453,14 @@ export function useCrmStore() {
         await archiveRow('excavation_reports', rowId)
         notify('Отчет архивирован')
       },
-      adminDelete: async (table: MutableTable, rowId: string, entityName: string, password: string, mode: 'delete' | 'annul' = 'delete', reason = '') => {
-        if (password !== '123456') {
-          notify('Неверный пароль администратора')
-          return false
-        }
+      adminDelete: async (table: MutableTable, rowId: string, entityName: string, mode: 'delete' | 'annul' = 'delete', reason = '') => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const audit = {
           id: id(),
           created_at: now(),
           module: 'Аудит',
           title: mode === 'delete' ? 'Удаление записи' : 'Аннулирование записи',
-          description: `Аддахан: ${mode === 'delete' ? 'удалил' : 'аннулировал'} ${tableLabel[table] ?? table} ${entityName || rowId}${reason ? `. Причина: ${reason}` : ''}`,
+          description: `${data.profile.full_name}: ${mode === 'delete' ? 'удалил' : 'аннулировал'} ${tableLabel[table] ?? table} ${entityName || rowId}${reason ? `. Причина: ${reason}` : ''}`,
         }
         setData((current) => {
           const list = current[table] as Array<Record<string, unknown>>
@@ -467,12 +477,9 @@ export function useCrmStore() {
         notify(mode === 'delete' ? 'Запись удалена' : 'Запись аннулирована')
         return true
       },
-      clearTestData: async (password: string, reason = 'Очистка тестовых данных') => {
-        if (password !== '123456') {
-          notify('Неверный пароль администратора')
-          return false
-        }
-        const audit = { id: id(), created_at: now(), module: 'Аудит', title: 'Очистка тестовых данных', description: `Аддахан: ${reason}` }
+      clearTestData: async (reason = 'Очистка тестовых данных') => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        const audit = { id: id(), created_at: now(), module: 'Аудит', title: 'Очистка тестовых данных', description: `${data.profile.full_name}: ${reason}` }
         setData((current) => ({
           ...current,
           clients: [],
@@ -490,8 +497,8 @@ export function useCrmStore() {
         return true
       },
     }),
-    [archiveRow, data.barter_assets, data.clients, data.invoices, notify, saveRow],
+    [archiveRow, canManage, data.barter_assets, data.clients, data.invoices, data.profile.full_name, notify, saveRow],
   )
 
-  return { data, setData, loading, toast, notify, api }
+  return { data, setData, loading, toast, notify, canManage, api }
 }

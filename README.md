@@ -20,7 +20,7 @@ cp .env.example .env
 npm run dev
 ```
 
-If Supabase variables are empty, the app works with local seeded/localStorage data. If Supabase variables are set, the app loads and writes CRM data through Supabase.
+For production, Supabase variables are required. CRM records are loaded and written through Supabase; localStorage is only a development fallback when Supabase is not configured.
 
 ## Environment Variables
 
@@ -34,14 +34,45 @@ Use only the Supabase anon public key in Vercel. Never commit service-role keys 
 ## Supabase Setup
 
 1. Create a Supabase project.
-2. In Authentication settings, enable Anonymous Sign-Ins while the CRM uses its temporary local admin login.
+2. In Authentication settings, keep email/password sign-in enabled. Anonymous Sign-Ins are not required.
 3. Run migrations in order from `supabase/migrations/` in the Supabase SQL editor:
    - `001_initial_schema.sql`
    - `002_current_app_compatibility.sql` only if an older test schema may already exist
-4. Copy Project URL into `VITE_SUPABASE_URL`.
-5. Copy Project API anon key into `VITE_SUPABASE_ANON_KEY`.
+   - `003_secure_admin_auth.sql`
+4. Create the production admin in Supabase Dashboard → Authentication → Users:
+   - Email: `admin@betonregar.com`
+   - Password: `000000571A`
+   - Confirm email: enabled/confirmed
+5. After the Auth user exists, run this SQL once in Supabase SQL Editor:
 
-The migration enables RLS and allows authenticated Supabase sessions to manage CRM tables. The frontend signs in anonymously to Supabase after the existing local CRM login, so the anon key is not used as a service key.
+```sql
+insert into public.users_profile (id, full_name, login, role, email)
+select id, 'Адхам', 'Adham', 'admin', email
+from auth.users
+where email = 'admin@betonregar.com'
+on conflict (id) do update
+set
+  full_name = excluded.full_name,
+  login = excluded.login,
+  role = excluded.role,
+  email = excluded.email,
+  updated_at = now();
+```
+
+6. Copy Project URL into `VITE_SUPABASE_URL`.
+7. Copy Project API anon key into `VITE_SUPABASE_ANON_KEY`.
+
+The migration enables RLS so authenticated users can view CRM data, while only users with `users_profile.role = 'admin'` can add, edit, delete, annul, or clear test data. The admin password is stored only in Supabase Auth, never in frontend code.
+
+### Safe Migration Policy
+
+All production migrations must be additive and idempotent:
+
+- Use `CREATE TABLE IF NOT EXISTS`.
+- Use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+- Never run `DROP TABLE`, `TRUNCATE`, or `DELETE` against production CRM records.
+- Policy changes may replace RLS policies, but must not remove business data.
+- Before future deploys, run new migrations manually in Supabase and verify row counts.
 
 ## Scripts
 
@@ -64,7 +95,12 @@ The project includes `vercel.json` with Vite build settings and SPA rewrites.
 6. Add environment variables in Vercel Project Settings:
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
-7. Deploy.
+7. Deploy or redeploy after the migration and environment variables are ready.
+
+Admin login after deployment:
+
+- Login: `Adham`
+- Password: `000000571A`
 
 ## Domain Later: betonregar.com
 
@@ -98,6 +134,18 @@ If the repository already has Git configured, use:
 ```bash
 git status
 git add .
-git commit -m "Prepare CRM for production deployment"
+git commit -m "Improve mobile UI and secure admin auth"
 git push
 ```
+
+Vercel is connected to GitHub, so it will auto-deploy after `git push`.
+
+## Production Data Verification
+
+After migration and deployment:
+
+1. In Supabase Table Editor, check row counts for `clients`, `client_reports`, `finance_transactions`, `barter_assets`, `daily_reports`, `invoices`, `lab_reports`, and `excavation_reports`.
+2. Log in at the site with `Adham`.
+3. Open client, finance, invoice, lab, and excavation pages and confirm existing records are visible.
+4. Refresh the browser and confirm the same data remains.
+5. Create a small test record only if needed, then confirm it appears in Supabase and survives refresh.

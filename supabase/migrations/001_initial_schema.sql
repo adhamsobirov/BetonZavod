@@ -23,6 +23,7 @@ end $$;
 create table if not exists users_profile (
   id uuid primary key references auth.users(id) on delete cascade,
   full_name text not null,
+  login text,
   role user_role not null default 'operator',
   email text not null unique,
   avatar_url text,
