@@ -3,7 +3,7 @@ export type Status = 'active' | 'pending' | 'debt' | 'archived' | 'paid' | 'unpa
 export type LabStatus = 'pending' | 'passed' | 'failed'
 export type BarterAssetType = 'apartment' | 'car' | 'land' | 'equipment' | 'other'
 export type BarterAssetStatus = 'active' | 'partial' | 'written_off' | 'owned'
-export type BarterDealStatus = 'pending' | 'accepted' | 'sold' | 'cancelled'
+export type BarterDealStatus = 'pending' | 'accepted' | 'sold' | 'active' | 'completed' | 'cancelled'
 export type CementMovementType = 'incoming' | 'usage'
 
 export type Profile = {
@@ -126,6 +126,11 @@ export type FinanceTransaction = {
   type: 'income' | 'expense' | 'barter'
   description: string
   amount: number
+  payment_method?: string
+  supplier_person?: string
+  notes?: string
+  linked_module?: string
+  linked_record_id?: string
   status: Status
   annulled?: boolean
 }

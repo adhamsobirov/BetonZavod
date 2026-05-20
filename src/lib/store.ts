@@ -63,7 +63,7 @@ const normalizeData = (data: AppData): AppData => ({
       barter_value: asset.barter_value ?? asset.market_value,
       total_paid_value: asset.total_paid_value ?? (asset.cash_paid ?? 0) + (asset.barter_value ?? asset.market_value),
       remaining_debt: asset.remaining_debt ?? Math.max((asset.linked_contract_amount ?? asset.market_value) - ((asset.cash_paid ?? 0) + (asset.barter_value ?? asset.market_value)), 0),
-      asset_status: asset.asset_status ?? (asset.status === 'written_off' || asset.status === 'owned' ? 'sold' : 'accepted'),
+      asset_status: asset.asset_status ?? (remaining === 0 ? 'completed' : 'active'),
       used_amount: used,
       remaining_amount: remaining,
       status: remaining === 0 ? 'written_off' : used > 0 ? 'partial' : asset.status ?? 'active',
@@ -159,6 +159,7 @@ const allocateBarterAssets = (assets: BarterAsset[], clientId: string, amount: n
       used_amount: usedAmount,
       remaining_amount: remainingAmount,
       status: remainingAmount === 0 ? ('written_off' as const) : ('partial' as const),
+      asset_status: remainingAmount === 0 ? 'completed' : 'active',
       owned_at: remainingAmount === 0 ? now() : asset.owned_at,
       updated_at: now(),
     })
@@ -289,6 +290,16 @@ export function useCrmStore(enabled = true) {
         await saveRow('finance_transactions', row)
         notify('Транзакция сохранена')
       },
+      updateFinance: async (transaction: FinanceTransaction) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        const row = { ...transaction }
+        setData((current) => ({
+          ...current,
+          finance_transactions: current.finance_transactions.map((item) => (item.id === row.id ? row : item)),
+        }))
+        await saveRow('finance_transactions', row)
+        notify('Транзакция обновлена')
+      },
       addBarterAsset: async (asset: Omit<BarterAsset, 'id' | 'used_amount' | 'remaining_amount' | 'status' | 'created_at' | 'updated_at'>) => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         if (!asset.type || !asset.market_value || asset.market_value <= 0) {
@@ -311,7 +322,7 @@ export function useCrmStore(enabled = true) {
           barter_value: barterValue,
           total_paid_value: totalPaidValue,
           remaining_debt: remainingDebt,
-          asset_status: asset.asset_status ?? 'accepted',
+          asset_status: asset.asset_status ?? 'active',
           source_client_name: data.clients.find((client) => client.id === asset.client_id)?.name,
           photos: asset.photos ?? [],
           created_at: now(),
@@ -399,8 +410,9 @@ export function useCrmStore(enabled = true) {
         if (!client) return
         const concreteAmount = delivery.volume_m3 * delivery.price_per_m3
         const totalAmount = concreteAmount + (delivery.transport_cost ?? 0)
-        const barterAmount = Math.round((totalAmount * client.barter_percent) / 100)
-        const cashAmount = totalAmount - barterAmount
+        const isBarterClient = client.barter_percent > 0
+        const barterAmount = isBarterClient ? totalAmount : 0
+        const cashAmount = isBarterClient ? 0 : totalAmount
         const cashCovered = Math.min(cashAmount, Math.max(client.cash_available ?? 0, 0))
         const cashDebt = Math.max(cashAmount - cashCovered, 0)
         const { updatedAssets, allocations, covered: actualCoveredBarter, remainingDebt: barterDebt } = allocateBarterAssets(data.barter_assets, client.id, barterAmount)
@@ -581,7 +593,7 @@ export function useCrmStore(enabled = true) {
           title: mode === 'delete' ? 'Удаление записи' : 'Аннулирование записи',
           description: `${data.profile.full_name}: ${mode === 'delete' ? 'удалил' : 'аннулировал'} ${tableLabel[table] ?? table} ${entityName || rowId}${reason ? `. Причина: ${reason}` : ''}`,
         }
-        setData((current) => {
+        const applyLocalMutation = () => setData((current) => {
           const list = current[table] as Array<Record<string, unknown>>
           const nextList = mode === 'delete'
             ? list.filter((item) => item.id !== rowId)
@@ -630,6 +642,7 @@ export function useCrmStore(enabled = true) {
           }
           await supabase.from('activity_logs').insert(audit)
         }
+        applyLocalMutation()
         notify(mode === 'delete' ? 'Запись удалена' : 'Запись аннулирована')
         return true
       },

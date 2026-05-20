@@ -41,6 +41,7 @@ Use only the Supabase anon public key in Vercel. Never commit service-role keys 
    - `003_secure_admin_auth.sql`
    - `004_mobile_and_kotlovan_polish.sql` if you need the improved Kotlovan project fields/status
    - `005_barter_cement_daily_reports.sql` for barter payment fields, cement inventory, and daily report integrations
+   - `006_smart_search_income_expense_barter_balance.sql` for income/expense metadata, smart search indexes, and barter balance tracking fields
 4. Create the production admin in Supabase Dashboard → Authentication → Users:
    - Email: `admin@betonregar.com`
    - Password: `000000571A`

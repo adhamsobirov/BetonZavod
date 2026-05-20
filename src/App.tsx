@@ -49,7 +49,7 @@ import { aggregateExcavation, dailyTotals, excavationTotals, money, numberRu } f
 import { exportExcel, exportPdf, exportReportPdf, printReport, type ExportRow, type ReportSection } from './lib/export'
 import { useCrmStore } from './lib/store'
 import { hasSupabaseEnv, supabase } from './lib/supabase'
-import type { BarterAssetType, CementMovement, Client, DailyReport, DailyReportItem, ExcavationReport, Invoice, LabReport, Profile, Status } from './types'
+import type { BarterAssetType, CementMovement, Client, DailyReport, DailyReportItem, ExcavationReport, FinanceTransaction, Invoice, LabReport, Profile, Status } from './types'
 import './App.css'
 
 const navItems = [
@@ -58,6 +58,8 @@ const navItems = [
   { label: 'Отчёты', to: '/reports', icon: FileText },
   { label: 'Ежедневный отчёт', to: '/daily', icon: Calendar },
   { label: 'Финансы', to: '/finance', icon: CreditCard },
+  { label: 'Приходы', to: '/income', icon: WalletCards },
+  { label: 'Расходы', to: '/expenses', icon: ReceiptText },
   { label: 'Цемент', to: '/cement', icon: Package },
   { label: 'Счета', to: '/invoices', icon: ReceiptText },
   { label: 'Лаборатория', to: '/lab', icon: FlaskConical },
@@ -156,6 +158,8 @@ function App() {
               <Route path="/reports" element={<Reports store={store} />} />
               <Route path="/daily" element={<Daily store={store} />} />
               <Route path="/finance" element={<Finance store={store} />} />
+              <Route path="/income" element={<FinanceOperationPage store={store} mode="income" />} />
+              <Route path="/expenses" element={<FinanceOperationPage store={store} mode="expense" />} />
               <Route path="/cement" element={<Cement store={store} />} />
               <Route path="/invoices" element={<Invoices store={store} />} />
               <Route path="/lab" element={<Lab store={store} />} />
@@ -262,6 +266,8 @@ const barterDealStatusLabel = {
   pending: 'Ожидает проверки',
   accepted: 'Принят',
   sold: 'Продан',
+  active: 'Активный',
+  completed: 'Завершен',
   cancelled: 'Отменен',
 }
 
@@ -269,6 +275,39 @@ const addDaysIso = (days: number) => {
   const date = new Date()
   date.setDate(date.getDate() + days)
   return date.toISOString().slice(0, 10)
+}
+
+type DateRange = { from: string; to: string; label: string }
+
+const isoDate = (date = new Date()) => date.toISOString().slice(0, 10)
+
+const addDate = (date: Date, days: number) => {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+const defaultDateRange = (): DateRange => {
+  const today = isoDate()
+  return { from: today, to: today, label: 'Сегодня' }
+}
+
+const rangeFromPreset = (preset: string, customFrom = '', customTo = ''): DateRange => {
+  const today = new Date()
+  if (preset === 'yesterday') {
+    const day = isoDate(addDate(today, -1))
+    return { from: day, to: day, label: 'Вчера' }
+  }
+  if (preset === 'week') return { from: isoDate(addDate(today, -6)), to: isoDate(today), label: 'Эта неделя' }
+  if (preset === 'month') return { from: `${isoDate(today).slice(0, 7)}-01`, to: isoDate(today), label: 'Этот месяц' }
+  if (preset === 'custom') return { from: customFrom || isoDate(today), to: customTo || customFrom || isoDate(today), label: 'Период' }
+  return defaultDateRange()
+}
+
+const inDateRange = (date: string | undefined, range: DateRange) => {
+  const day = date?.slice(0, 10)
+  if (!day) return false
+  return day >= range.from && day <= range.to
 }
 
 const cementSummary = (movements: CementMovement[]) => {
@@ -336,6 +375,8 @@ function Sidebar({ open, canManage, onClose, onLogout, onDelivery }: { open: boo
 }
 
 function Topbar({ store, onDelivery }: { store: Store; onDelivery: () => void }) {
+  const navigate = useNavigate()
+  const [query, setQuery] = useState('')
   const income = store.data.finance_transactions.filter((item) => item.type === 'income' && !item.annulled).reduce((sum, item) => sum + item.amount, 0)
   const expenses = store.data.finance_transactions.filter((item) => item.type === 'expense' && !item.annulled).reduce((sum, item) => sum + item.amount, 0)
   const debt = store.data.clients.reduce((sum, item) => sum + Math.abs(Math.min(item.balance, 0)), 0)
@@ -353,13 +394,88 @@ function Topbar({ store, onDelivery }: { store: Store; onDelivery: () => void })
       ],
     },
   ]
+  const normalizedQuery = query.trim().toLowerCase()
+  const matches = (value: unknown) => String(value ?? '').toLowerCase().includes(normalizedQuery)
+  const searchResults = normalizedQuery
+    ? [
+        ...store.data.clients.filter((client) => !client.archived && [client.name, client.phone, client.login, client.status, client.balance].some(matches)).map((client) => ({
+          module: 'Клиенты',
+          title: client.name,
+          subtitle: `${client.phone} · баланс ${money(client.balance)}`,
+          to: `/clients/${client.id}`,
+        })),
+        ...store.data.client_reports.filter((row) => !row.annulled && [row.date, row.object_name, row.concrete_grade, row.volume_m3, row.amount, row.comment].some(matches)).map((row) => ({
+          module: 'Поставки',
+          title: row.object_name,
+          subtitle: `${row.date} · ${row.concrete_grade} · ${money(row.amount)}`,
+          to: `/clients/${row.client_id}`,
+        })),
+        ...store.data.finance_transactions.filter((row) => !row.annulled && [row.date, row.category, row.type, row.description, row.amount, row.payment_method].some(matches)).map((row) => ({
+          module: row.type === 'expense' ? 'Расходы' : 'Приходы',
+          title: row.category,
+          subtitle: `${row.date} · ${row.description} · ${money(row.amount)}`,
+          to: row.type === 'expense' ? '/expenses' : '/income',
+        })),
+        ...store.data.barter_assets.filter((asset) => [asset.asset_name, asset.type, asset.comment, asset.market_value, asset.remaining_amount, asset.asset_status].some(matches)).map((asset) => ({
+          module: 'Бартер',
+          title: asset.asset_name,
+          subtitle: `${barterAssetTypeLabels[asset.type]} · остаток ${money(asset.remaining_amount)}`,
+          to: `/clients/${asset.client_id}`,
+        })),
+        ...store.data.cement_movements.filter((row) => !row.annulled && [row.date, row.supplier, row.reason, row.project, row.client_name, row.tons, row.total_cost].some(matches)).map((row) => ({
+          module: 'Цемент',
+          title: row.type === 'incoming' ? 'Приход цемента' : 'Расход цемента',
+          subtitle: `${row.date} · ${numberRu(row.tons, 2)} т · ${money(row.total_cost)}`,
+          to: '/cement',
+        })),
+        ...store.data.excavation_reports.filter((row) => !row.annulled && !row.archived && [row.date, row.object_name, row.client_name, row.location, row.status].some(matches)).map((row) => ({
+          module: 'Котлован',
+          title: row.object_name,
+          subtitle: `${row.client_name} · ${row.location}`,
+          to: `/excavation/${row.id}`,
+        })),
+        ...store.data.invoices.filter((row) => row.status !== 'annulled' && [row.number, row.date, row.due_date, row.amount, row.status].some(matches)).map((row) => ({
+          module: 'Счета',
+          title: row.number,
+          subtitle: `${row.date} · ${money(row.amount)} · ${statusLabel[row.status]}`,
+          to: '/invoices',
+        })),
+        ...store.data.daily_reports.filter((row) => !row.annulled && [row.date, row.cement_t, row.fuel_expense, row.salary_expense].some(matches)).map((row) => ({
+          module: 'Ежедневный отчёт',
+          title: new Date(row.date).toLocaleDateString('ru-RU'),
+          subtitle: `${row.items.length} строк · цемент ${numberRu(row.cement_t, 2)} т`,
+          to: '/daily',
+        })),
+      ].slice(0, 10)
+    : []
 
   return (
     <header className="topbar">
-      <label className="search">
-        <Search size={18} />
-        <input placeholder="Поиск объектов или отчетов..." />
-      </label>
+      <div className="smart-search">
+        <label className="search">
+          <Search size={18} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Умный поиск по CRM..." />
+        </label>
+        {searchResults.length > 0 && (
+          <div className="search-results">
+            {searchResults.map((result, index) => (
+              <button
+                key={`${result.module}-${result.title}-${index}`}
+                type="button"
+                className="search-result"
+                onClick={() => {
+                  setQuery('')
+                  navigate(result.to)
+                }}
+              >
+                <span>{result.module}</span>
+                <strong>{result.title}</strong>
+                <small>{result.subtitle}</small>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="top-actions">
         <button className="secondary" onClick={() => exportReportPdf('Сводный отчет CRM', sections, 'crm-summary')}>
           <Download size={18} /> Экспорт
@@ -426,6 +542,39 @@ function PageHeader({ title, subtitle, action }: { title: string; subtitle?: str
         {subtitle && <p>{subtitle}</p>}
       </div>
       {action}
+    </div>
+  )
+}
+
+function SmartCalendar({ range, onChange }: { range: DateRange; onChange: (range: DateRange) => void }) {
+  const [preset, setPreset] = useState(range.label === 'Сегодня' ? 'today' : 'custom')
+  const [from, setFrom] = useState(range.from)
+  const [to, setTo] = useState(range.to)
+  const applyPreset = (value: string) => {
+    setPreset(value)
+    const next = rangeFromPreset(value, from, to)
+    setFrom(next.from)
+    setTo(next.to)
+    onChange(next)
+  }
+  const applyCustom = (nextFrom: string, nextTo: string) => {
+    setPreset('custom')
+    setFrom(nextFrom)
+    setTo(nextTo)
+    onChange(rangeFromPreset('custom', nextFrom, nextTo))
+  }
+
+  return (
+    <div className="smart-calendar">
+      <select value={preset} onChange={(event) => applyPreset(event.target.value)}>
+        <option value="today">Сегодня</option>
+        <option value="yesterday">Вчера</option>
+        <option value="week">Эта неделя</option>
+        <option value="month">Этот месяц</option>
+        <option value="custom">Свой период</option>
+      </select>
+      <input type="date" value={from} onChange={(event) => applyCustom(event.target.value, to)} />
+      <input type="date" value={to} onChange={(event) => applyCustom(from, event.target.value)} />
     </div>
   )
 }
@@ -672,11 +821,12 @@ function Clients({ store }: { store: Store }) {
 function ClientDetail({ store }: { store: Store }) {
   const { id } = useParams()
   const [assetModalOpen, setAssetModalOpen] = useState(false)
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
   const client = store.data.clients.find((item) => item.id === id)
   if (!client) return <EmptyState title="Клиент не найден" />
-  const rows = store.data.client_reports.filter((report) => report.client_id === client.id && !report.annulled)
-  const payments = store.data.finance_transactions.filter((item) => item.client_id === client.id && item.category === 'Оплата' && !item.annulled)
-  const barterAssets = store.data.barter_assets.filter((asset) => asset.client_id === client.id)
+  const rows = store.data.client_reports.filter((report) => report.client_id === client.id && !report.annulled && inDateRange(report.date, range))
+  const payments = store.data.finance_transactions.filter((item) => item.client_id === client.id && item.category === 'Оплата' && !item.annulled && inDateRange(item.date, range))
+  const barterAssets = store.data.barter_assets.filter((asset) => asset.client_id === client.id && inDateRange(asset.created_at, range))
   const ownedAssets = barterAssets.filter((asset) => asset.remaining_amount <= 0 || asset.status === 'written_off' || asset.status === 'owned')
   const totals = rows.reduce(
     (acc, row) => ({
@@ -764,6 +914,10 @@ function ClientDetail({ store }: { store: Store }) {
           </div>
         }
       />
+      <div className="toolbar">
+        <SmartCalendar range={range} onChange={setRange} />
+        <span className="muted-text">Период отчёта: {new Date(range.from).toLocaleDateString('ru-RU')} - {new Date(range.to).toLocaleDateString('ru-RU')}</span>
+      </div>
       <div className="kpi-grid four">
         <Kpi title="Общая сумма договора" value={money(client.contract_total ?? 0)} />
         <Kpi title="Поставлено бетона" value={`${numberRu(totals.volume, 1)} м³`} />
@@ -928,8 +1082,9 @@ function ClientDetail({ store }: { store: Store }) {
 }
 
 function Reports({ store }: { store: Store }) {
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
   const rows = store.data.clients.filter((client) => !client.archived).map((client) => {
-    const reports = store.data.client_reports.filter((report) => report.client_id === client.id && !report.annulled)
+    const reports = store.data.client_reports.filter((report) => report.client_id === client.id && !report.annulled && inDateRange(report.date, range))
     return {
       client,
       orders: reports.length,
@@ -950,7 +1105,7 @@ function Reports({ store }: { store: Store }) {
         action={<ExportButtons title="Отчеты по клиентам" rows={exportRows} filename="client-reports" />}
       />
       <div className="toolbar">
-        <button className="secondary">Все периоды <ChevronDown size={16} /></button>
+        <SmartCalendar range={range} onChange={setRange} />
         <button className="secondary">Все типы договоров <ChevronDown size={16} /></button>
         <label className="search small"><Search size={18} /><input placeholder="Поиск клиента..." /></label>
       </div>
@@ -985,22 +1140,24 @@ function Reports({ store }: { store: Store }) {
 }
 
 function Finance({ store }: { store: Store }) {
-  const totals = store.data.finance_transactions.reduce(
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
+  const [clientFilter, setClientFilter] = useState('all')
+  const financeRows = store.data.finance_transactions.filter((item) => !item.annulled && inDateRange(item.date, range))
+  const visibleTransactions = clientFilter === 'all' ? financeRows : financeRows.filter((item) => item.client_id === clientFilter)
+  const totals = visibleTransactions.reduce(
     (acc, item) => {
       acc[item.type] += item.amount
       return acc
     },
     { income: 0, expense: 0, barter: 0 },
   )
-  const [clientFilter, setClientFilter] = useState('all')
-  const financeRows = store.data.finance_transactions.filter((item) => !item.annulled)
-  const visibleTransactions = clientFilter === 'all' ? financeRows : financeRows.filter((item) => item.client_id === clientFilter)
   const exportRows = visibleTransactions.map((item) => ({ Дата: item.date, Категория: item.category, Тип: item.type, Описание: item.description, Сумма: item.amount }))
 
   return (
     <>
       <PageHeader title="Финансы" subtitle="Финансовая сводка, оплаты, долги и бартер." action={<ExportButtons title="Финансы" rows={exportRows} filename="finance" />} />
       <div className="toolbar">
+        <SmartCalendar range={range} onChange={setRange} />
         <SelectField label="Фильтр по клиенту" value={clientFilter} onChange={setClientFilter} options={[{ value: 'all', label: 'Все клиенты' }, ...store.data.clients.map((client) => ({ value: client.id, label: client.name }))]} />
       </div>
       <div className="kpi-grid four">
@@ -1013,7 +1170,7 @@ function Finance({ store }: { store: Store }) {
         <Card>
           <div className="card-title"><h2>Последние транзакции</h2><button className="link-btn" onClick={() => store.notify('Показаны все доступные транзакции')}>Смотреть все</button></div>
           <table className="crm-table compact-table">
-            <thead><tr><th>Дата</th><th>Категория</th><th>Описание</th><th>Сумма</th></tr></thead>
+            <thead><tr><th>Дата</th><th>Категория</th><th>Описание</th><th>Сумма</th><th>Действия</th></tr></thead>
             <tbody>
               {visibleTransactions.map((item) => (
                 <tr key={item.id}>
@@ -1021,6 +1178,12 @@ function Finance({ store }: { store: Store }) {
                   <td><span className="pill blue">{item.category}</span></td>
                   <td>{item.description}</td>
                   <td className={item.type === 'income' ? 'blue-text' : item.type === 'barter' ? 'amber-text' : 'red-text'}>{item.type === 'income' ? '+ ' : '- '}{money(item.amount)}</td>
+                  <td>
+                    <div className="row-actions">
+                      <button className="secondary" onClick={() => store.notify(`${item.category}: ${item.description}`)}>Детали</button>
+                      {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('finance_transactions', item.id, item.description, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1032,13 +1195,155 @@ function Finance({ store }: { store: Store }) {
   )
 }
 
+function FinanceOperationPage({ store, mode }: { store: Store; mode: 'income' | 'expense' }) {
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<FinanceTransaction | null>(null)
+  const [detail, setDetail] = useState<FinanceTransaction | null>(null)
+  const rows = store.data.finance_transactions
+    .filter((item) => !item.annulled)
+    .filter((item) => (mode === 'income' ? item.type === 'income' || item.type === 'barter' : item.type === 'expense'))
+    .filter((item) => inDateRange(item.date, range))
+  const totals = rows.reduce((sum, item) => sum + item.amount, 0)
+  const exportRows = rows.map((item) => ({
+    Дата: item.date,
+    Источник: item.client_id ? store.data.clients.find((client) => client.id === item.client_id)?.name ?? '' : item.supplier_person ?? '',
+    Категория: item.category,
+    Сумма: item.amount,
+    Метод: item.payment_method ?? '',
+    Примечание: item.notes ?? item.description,
+  }))
+
+  return (
+    <>
+      <PageHeader
+        title={mode === 'income' ? 'Приходы' : 'Расходы'}
+        subtitle={mode === 'income' ? 'Все входящие оплаты, бартер и прочие поступления.' : 'Категории расходов, поставщики и привязанные операции.'}
+        action={<div className="toolbar compact"><ExportButtons title={mode === 'income' ? 'Приходы' : 'Расходы'} rows={exportRows} filename={mode === 'income' ? 'income' : 'expenses'} />{store.canManage && <button className="primary" onClick={() => setOpen(true)}><Plus size={18} /> Добавить</button>}</div>}
+      />
+      <div className="toolbar">
+        <SmartCalendar range={range} onChange={setRange} />
+      </div>
+      <div className="kpi-grid four">
+        <Kpi title={mode === 'income' ? 'Приход за период' : 'Расход за период'} value={money(totals)} tone={mode === 'income' ? 'green' : 'red'} />
+        <Kpi title="Операций" value={numberRu(rows.length)} />
+        <Kpi title="Средняя сумма" value={money(rows.length ? totals / rows.length : 0)} />
+        <Kpi title="Период" value={`${new Date(range.from).toLocaleDateString('ru-RU')} - ${new Date(range.to).toLocaleDateString('ru-RU')}`} tone="amber" />
+      </div>
+      <div className="operation-cards">
+        {rows.length ? rows.map((row) => {
+          const client = row.client_id ? store.data.clients.find((item) => item.id === row.client_id) : undefined
+          return (
+            <Card className="operation-card" key={row.id}>
+              <div className="card-title">
+                <div>
+                  <span className={row.type === 'expense' ? 'tag tag-red' : row.type === 'barter' ? 'tag tag-amber' : 'tag tag-green'}>{row.category}</span>
+                  <h2>{row.description}</h2>
+                  <p>{new Date(row.date).toLocaleDateString('ru-RU')} · {client?.name ?? row.supplier_person ?? row.payment_method ?? 'Без источника'}</p>
+                </div>
+                <strong className={row.type === 'expense' ? 'red-text amount' : 'green-text amount'}>{row.type === 'expense' ? '- ' : '+ '}{money(row.amount)}</strong>
+              </div>
+              <div className="operation-meta">
+                <Info label="Метод оплаты" value={row.payment_method ?? '-'} />
+                <Info label="Связь" value={row.linked_module ?? '-'} />
+                <Info label="Примечание" value={row.notes ?? '-'} />
+              </div>
+              <div className="row-actions">
+                <button className="secondary" onClick={() => setDetail(row)}>Детали</button>
+                {store.canManage && <button className="secondary" onClick={() => setEditing(row)}><Edit3 size={16} /> Изменить</button>}
+                {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('finance_transactions', row.id, row.description, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
+              </div>
+            </Card>
+          )
+        }) : <EmptyState title={mode === 'income' ? 'Приходов за период нет' : 'Расходов за период нет'} />}
+      </div>
+      {open && <FinanceOperationModal store={store} mode={mode} onClose={() => setOpen(false)} />}
+      {editing && <FinanceOperationModal store={store} mode={mode} transaction={editing} onClose={() => setEditing(null)} />}
+      {detail && (
+        <Modal title="Детали операции" onClose={() => setDetail(null)} onSubmit={(event) => { event.preventDefault(); setDetail(null) }}>
+          <div className="grid two">
+            <Card><Info label="Дата" value={detail.date} /><Info label="Категория" value={detail.category} /><Info label="Сумма" value={money(detail.amount)} /></Card>
+            <Card><Info label="Описание" value={detail.description} /><Info label="Метод" value={detail.payment_method ?? '-'} /><Info label="Примечание" value={detail.notes ?? '-'} /></Card>
+          </div>
+        </Modal>
+      )}
+    </>
+  )
+}
+
+function FinanceOperationModal({ store, mode, transaction, onClose }: { store: Store; mode: 'income' | 'expense'; transaction?: FinanceTransaction; onClose: () => void }) {
+  const [form, setForm] = useState<FinanceTransaction>(transaction ?? {
+    id: '',
+    date: isoDate(),
+    client_id: '',
+    category: mode === 'income' ? 'Оплата клиента' : 'прочее',
+    type: mode,
+    description: '',
+    amount: 0,
+    payment_method: 'наличные',
+    supplier_person: '',
+    notes: '',
+    linked_module: '',
+    linked_record_id: '',
+    status: 'paid',
+  })
+  const categories = mode === 'income'
+    ? ['Оплата клиента', 'Бартер принят', 'Оплата за бетон', 'Прочий приход']
+    : ['топливо', 'зарплата', 'ремонт', 'запчасти', 'техника', 'цемент', 'аренда', 'прочее']
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (form.amount <= 0) return store.notify('Укажите сумму операции')
+    if (transaction) {
+      await store.api.updateFinance(form)
+    } else if (mode === 'income' && form.category === 'Оплата клиента' && form.client_id) {
+      await store.api.addPayment(form.client_id, form.amount, form.date, form.description || 'Оплата клиента')
+    } else {
+      await store.api.addFinance({
+        client_id: form.client_id,
+        date: form.date,
+        category: form.category,
+        type: mode === 'income' && form.category === 'Бартер принят' ? 'barter' : mode,
+        description: form.description || form.category,
+        amount: form.amount,
+        payment_method: form.payment_method,
+        supplier_person: form.supplier_person,
+        notes: form.notes,
+        linked_module: form.linked_module,
+        linked_record_id: form.linked_record_id,
+        status: form.status,
+      })
+    }
+    onClose()
+  }
+
+  return (
+    <Modal title={transaction ? 'Редактировать операцию' : mode === 'income' ? 'Добавить приход' : 'Добавить расход'} onClose={onClose} onSubmit={submit}>
+      <div className="form-grid three-cols">
+        <Field label="Дата" value={form.date} onChange={(v) => setForm({ ...form, date: v })} type="date" />
+        <SelectField label="Категория" value={form.category} onChange={(v) => setForm({ ...form, category: v })} options={categories.map((category) => ({ value: category, label: category }))} />
+        <Field label="Сумма" value={form.amount} onChange={(v) => setForm({ ...form, amount: Number(v) })} type="number" min={0} />
+        {mode === 'income' ? (
+          <SelectField label="Источник / клиент" value={form.client_id ?? ''} onChange={(v) => setForm({ ...form, client_id: v })} options={[{ value: '', label: 'Без клиента' }, ...store.data.clients.map((client) => ({ value: client.id, label: client.name }))]} />
+        ) : (
+          <Field label="Поставщик / сотрудник" value={form.supplier_person ?? ''} onChange={(v) => setForm({ ...form, supplier_person: v })} />
+        )}
+        <SelectField label="Метод оплаты" value={form.payment_method ?? ''} onChange={(v) => setForm({ ...form, payment_method: v })} options={['наличные', 'банк', 'карта', 'бартер', 'другое'].map((value) => ({ value, label: value }))} />
+        <Field label="Описание" value={form.description} onChange={(v) => setForm({ ...form, description: v })} />
+        <Field label="Связанный модуль" value={form.linked_module ?? ''} onChange={(v) => setForm({ ...form, linked_module: v })} />
+        <Field label="ID связанной записи" value={form.linked_record_id ?? ''} onChange={(v) => setForm({ ...form, linked_record_id: v })} />
+        <Field label="Примечание" value={form.notes ?? ''} onChange={(v) => setForm({ ...form, notes: v })} />
+      </div>
+    </Modal>
+  )
+}
+
 function Cement({ store }: { store: Store }) {
   const [open, setOpen] = useState<'incoming' | 'usage' | null>(null)
   const [query, setQuery] = useState('')
-  const [month, setMonth] = useState('')
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
   const rows = store.data.cement_movements
     .filter((item) => !item.annulled)
-    .filter((item) => !month || item.date.startsWith(month))
+    .filter((item) => inDateRange(item.date, range))
     .filter((item) => {
       const text = `${item.supplier ?? ''} ${item.reason ?? ''} ${item.project ?? ''} ${item.client_name ?? ''} ${item.notes ?? ''}`.toLowerCase()
       return text.includes(query.toLowerCase())
@@ -1069,11 +1374,11 @@ function Cement({ store }: { store: Store }) {
         <Kpi title="Оценка расхода" value={money(totals.estimatedUsedCost)} tone="red" />
       </div>
       <div className="toolbar">
+        <SmartCalendar range={range} onChange={setRange} />
         <label className="search small">
           <Search size={18} />
           <input placeholder="Поиск по поставщику, объекту, клиенту..." value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <Field label="Месяц" value={month} onChange={setMonth} type="month" />
       </div>
       <div className="cement-cards">
         {rows.length ? rows.map((row) => (
@@ -1183,7 +1488,12 @@ function Daily({ store }: { store: Store }) {
       <PageHeader
         title="Ежедневный отчет"
         subtitle={new Date(report.date).toLocaleDateString('ru-RU')}
-        action={<Field label="Дата отчета" value={report.date} onChange={(v) => setReport({ ...report, date: v })} type="date" />}
+        action={
+          <div className="toolbar compact">
+            <SmartCalendar range={{ from: report.date, to: report.date, label: 'Сегодня' }} onChange={(next) => setReport({ ...report, date: next.from })} />
+            <Field label="Дата отчета" value={report.date} onChange={(v) => setReport({ ...report, date: v })} type="date" />
+          </div>
+        }
       />
       <div className="kpi-grid four">
         <Kpi title="Доход дня" value={money(integratedIncome)} />
@@ -1376,7 +1686,8 @@ function Excavation({ store }: { store: Store }) {
   const [modalReport, setModalReport] = useState<ExcavationReport | null>(null)
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
-  const allReports = store.data.excavation_reports.filter((item) => !item.archived && !item.annulled)
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
+  const allReports = store.data.excavation_reports.filter((item) => !item.archived && !item.annulled && inDateRange(item.date, range))
   const reports = allReports.filter((item) => {
     const haystack = `${item.object_name} ${item.client_name} ${item.location} ${item.work_type}`.toLowerCase()
     const matchesQuery = haystack.includes(query.trim().toLowerCase())
@@ -1408,6 +1719,7 @@ function Excavation({ store }: { store: Store }) {
         <Kpi title="Долг" value={money(totals.totalDebt)} tone="red" />
       </div>
       <div className="toolbar">
+        <SmartCalendar range={range} onChange={setRange} />
         <label className="search small">
           <Search size={18} />
           <input placeholder="Поиск котлована, клиента или локации..." value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -1697,7 +2009,7 @@ function BarterAssetModal({ client, store, onClose }: { client: Client; store: S
     linked_contract_amount: 0,
     cash_paid: 0,
     barter_value: 0,
-    asset_status: 'accepted' as const,
+    asset_status: 'active' as const,
     photos: [] as string[],
     comment: '',
     apartment_number: '',
@@ -1858,7 +2170,7 @@ function ConcreteDeliveryModal({ store, onClose }: { store: Store; onClose: () =
   })
   const client = store.data.clients.find((item) => item.id === form.client_id)
   const amount = form.volume_m3 * form.price_per_m3 + form.transport_cost
-  const barter = client ? Math.round((amount * client.barter_percent) / 100) : 0
+  const barter = client && client.barter_percent > 0 ? amount : 0
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!form.client_id || !form.object_name || form.volume_m3 <= 0 || form.price_per_m3 <= 0) {
