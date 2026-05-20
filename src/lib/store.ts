@@ -410,9 +410,9 @@ export function useCrmStore(enabled = true) {
         if (!client) return
         const concreteAmount = delivery.volume_m3 * delivery.price_per_m3
         const totalAmount = concreteAmount + (delivery.transport_cost ?? 0)
-        const isBarterClient = client.barter_percent > 0
-        const barterAmount = isBarterClient ? totalAmount : 0
-        const cashAmount = isBarterClient ? 0 : totalAmount
+        const barterPercent = Math.max(0, Math.min(client.barter_percent ?? 0, 100))
+        const barterAmount = Math.round((totalAmount * barterPercent) / 100)
+        const cashAmount = totalAmount - barterAmount
         const cashCovered = Math.min(cashAmount, Math.max(client.cash_available ?? 0, 0))
         const cashDebt = Math.max(cashAmount - cashCovered, 0)
         const { updatedAssets, allocations, covered: actualCoveredBarter, remainingDebt: barterDebt } = allocateBarterAssets(data.barter_assets, client.id, barterAmount)
@@ -443,6 +443,15 @@ export function useCrmStore(enabled = true) {
           amount: totalAmount,
           status: 'unpaid',
         }
+        const updatedClient: Client = {
+          ...client,
+          balance: client.balance - cashDebt - barterDebt,
+          cash_available: Math.max((client.cash_available ?? 0) - cashCovered, 0),
+          total_supplied_m3: (client.total_supplied_m3 ?? 0) + row.volume_m3,
+          total_barter_value: client.total_barter_value ?? 0,
+          status: cashDebt + barterDebt > 0 ? 'debt' : client.status,
+          updated_at: now(),
+        }
         setData((current) => ({
           ...current,
           client_reports: [row, ...current.client_reports],
@@ -450,15 +459,7 @@ export function useCrmStore(enabled = true) {
           finance_transactions: [financeRow, ...current.finance_transactions],
           clients: current.clients.map((item) =>
             item.id === client.id
-              ? {
-                  ...item,
-                  balance: item.balance - cashDebt - barterDebt,
-                  cash_available: Math.max((item.cash_available ?? 0) - cashCovered, 0),
-                  total_supplied_m3: (item.total_supplied_m3 ?? 0) + row.volume_m3,
-                  total_barter_value: item.total_barter_value ?? 0,
-                  status: 'debt',
-                  updated_at: now(),
-                }
+              ? updatedClient
               : item,
           ),
           daily_reports: current.daily_reports.map((report) =>
@@ -486,6 +487,7 @@ export function useCrmStore(enabled = true) {
         }))
         await saveRow('client_reports', row)
         await Promise.all(updatedAssets.map((asset) => saveRow('barter_assets', asset)))
+        await saveRow('clients', updatedClient)
         await saveRow('finance_transactions', financeRow)
         notify(cashDebt > 0 || actualCoveredBarter < barterAmount ? 'Накладная сохранена, есть долг по наличным или бартеру' : 'Накладная бетона сохранена')
       },

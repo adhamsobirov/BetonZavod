@@ -842,11 +842,13 @@ function ClientDetail({ store }: { store: Store }) {
   const cashPaid = payments.reduce((sum, item) => sum + item.amount, 0)
   const usedCash = Math.min(cashPaid, totals.cash)
   const remainingCash = Math.max(cashPaid - usedCash, 0)
+  const currentCashBalance = Math.max(client.cash_available ?? remainingCash, 0)
   const cashDebt = Math.max(totals.cash - usedCash, 0)
   const totalMarketValue = barterAssets.reduce((sum, asset) => sum + asset.market_value, 0)
   const totalCostPrice = barterAssets.reduce((sum, asset) => sum + (asset.cost_price ?? 0), 0)
   const usedBarter = barterAssets.reduce((sum, asset) => sum + asset.used_amount, 0)
   const remainingBarter = barterAssets.reduce((sum, asset) => sum + asset.remaining_amount, 0)
+  const barterProgress = totalMarketValue > 0 ? Math.min(100, (usedBarter / totalMarketValue) * 100) : 0
   const barterDebt = Math.max(totals.barter - usedBarter, 0)
   const barterProfit = totalMarketValue - totalCostPrice
   const debt = cashDebt + barterDebt
@@ -928,7 +930,7 @@ function ClientDetail({ store }: { store: Store }) {
         <Kpi title="Наличная часть" value={`${client.cash_percent}% · ${money(totals.cash)}`} />
         <Kpi title="Бартерная часть" value={`${client.barter_percent}% · ${money(totals.barter)}`} />
         <Kpi title="Использовано наличных" value={money(usedCash)} />
-        <Kpi title="Остаток наличных" value={money(remainingCash)} tone="green" />
+        <Kpi title="Остаток наличных" value={money(currentCashBalance)} tone="green" />
       </div>
       <div className="kpi-grid four">
         <Kpi title="Стоимость бартерных активов" value={money(totalMarketValue)} />
@@ -942,6 +944,23 @@ function ClientDetail({ store }: { store: Store }) {
         <Kpi title="Общий долг" value={money(debt)} tone="red" />
         <Kpi title="Наши активы" value={numberRu(ownedAssets.length)} tone="green" />
       </div>
+      <Card className="balance-progress-card">
+        <div className="card-title">
+          <div>
+            <h2>Баланс договора</h2>
+            <p className="muted-text">Сплит: наличные {client.cash_percent}% / бартер {client.barter_percent}%</p>
+          </div>
+          <strong>{numberRu(barterProgress, 1)}% бартера использовано</strong>
+        </div>
+        <div className="mobile-progress">
+          <div><i style={{ width: `${barterProgress}%` }} /></div>
+          <span>Бартер: использовано {money(usedBarter)} из {money(totalMarketValue)} · остаток {money(remainingBarter)}</span>
+        </div>
+        <div className="grid two compact-balance-grid">
+          <Info label="Наличный остаток" value={money(currentCashBalance)} tone={cashDebt > 0 ? 'amber' : 'green'} />
+          <Info label="Бартерный остаток" value={money(remainingBarter)} tone={barterDebt > 0 ? 'amber' : 'green'} />
+        </div>
+      </Card>
       <Card>
         <h2>История поставок бетона</h2>
         <table className="crm-table">
@@ -2170,7 +2189,17 @@ function ConcreteDeliveryModal({ store, onClose }: { store: Store; onClose: () =
   })
   const client = store.data.clients.find((item) => item.id === form.client_id)
   const amount = form.volume_m3 * form.price_per_m3 + form.transport_cost
-  const barter = client && client.barter_percent > 0 ? amount : 0
+  const barter = client ? Math.round((amount * Math.max(0, Math.min(client.barter_percent ?? 0, 100))) / 100) : 0
+  const cashPart = Math.max(amount - barter, 0)
+  const cashBefore = Math.max(client?.cash_available ?? 0, 0)
+  const cashAfter = Math.max(cashBefore - cashPart, 0)
+  const cashDebt = Math.max(cashPart - cashBefore, 0)
+  const barterBefore = client ? store.data.barter_assets
+    .filter((asset) => asset.client_id === client.id && asset.remaining_amount > 0 && asset.status !== 'written_off' && asset.status !== 'owned')
+    .reduce((sum, asset) => sum + asset.remaining_amount, 0) : 0
+  const barterAfter = Math.max(barterBefore - barter, 0)
+  const barterDebt = Math.max(barter - barterBefore, 0)
+  const projectedDebt = cashDebt + barterDebt
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!form.client_id || !form.object_name || form.volume_m3 <= 0 || form.price_per_m3 <= 0) {
@@ -2197,9 +2226,20 @@ function ConcreteDeliveryModal({ store, onClose }: { store: Store; onClose: () =
       <div className="calc-strip">
         <SummaryLine label="Сумма бетона" value={money(form.volume_m3 * form.price_per_m3)} />
         <SummaryLine label="Итого накладная" value={money(amount)} />
-        <SummaryLine label="Денежная часть" value={money(amount - barter)} tone="blue" />
+        <SummaryLine label="Денежная часть" value={money(cashPart)} tone="blue" />
         <SummaryLine label="Бартерная часть" value={money(barter)} tone="amber" />
       </div>
+      <div className="calc-strip balance-preview">
+        <SummaryLine label="Наличные до" value={money(cashBefore)} />
+        <SummaryLine label="Наличные после" value={money(cashAfter)} tone={cashDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Бартер до" value={money(barterBefore)} />
+        <SummaryLine label="Бартер после" value={money(barterAfter)} tone={barterDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Долг по наличным" value={money(cashDebt)} tone={cashDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Долг по бартеру" value={money(barterDebt)} tone={barterDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Остаточный долг" value={money(projectedDebt)} tone={projectedDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Сплит договора" value={`${client?.cash_percent ?? 100}% / ${client?.barter_percent ?? 0}%`} />
+      </div>
+      {projectedDebt > 0 && <p className="error-text">По этой накладной возникнет долг: не хватает наличного или бартерного остатка.</p>}
     </Modal>
   )
 }
