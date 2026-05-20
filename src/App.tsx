@@ -35,6 +35,7 @@ import {
   Search,
   Settings,
   Shield,
+  Package,
   Trash2,
   UserCircle,
   Users,
@@ -48,7 +49,7 @@ import { aggregateExcavation, dailyTotals, excavationTotals, money, numberRu } f
 import { exportExcel, exportPdf, exportReportPdf, printReport, type ExportRow, type ReportSection } from './lib/export'
 import { useCrmStore } from './lib/store'
 import { hasSupabaseEnv, supabase } from './lib/supabase'
-import type { BarterAssetType, Client, DailyReport, DailyReportItem, ExcavationReport, Invoice, LabReport, Profile, Status } from './types'
+import type { BarterAssetType, CementMovement, Client, DailyReport, DailyReportItem, ExcavationReport, Invoice, LabReport, Profile, Status } from './types'
 import './App.css'
 
 const navItems = [
@@ -57,6 +58,7 @@ const navItems = [
   { label: 'Отчёты', to: '/reports', icon: FileText },
   { label: 'Ежедневный отчёт', to: '/daily', icon: Calendar },
   { label: 'Финансы', to: '/finance', icon: CreditCard },
+  { label: 'Цемент', to: '/cement', icon: Package },
   { label: 'Счета', to: '/invoices', icon: ReceiptText },
   { label: 'Лаборатория', to: '/lab', icon: FlaskConical },
   { label: 'Котлован', to: '/excavation', icon: Home },
@@ -154,6 +156,7 @@ function App() {
               <Route path="/reports" element={<Reports store={store} />} />
               <Route path="/daily" element={<Daily store={store} />} />
               <Route path="/finance" element={<Finance store={store} />} />
+              <Route path="/cement" element={<Cement store={store} />} />
               <Route path="/invoices" element={<Invoices store={store} />} />
               <Route path="/lab" element={<Lab store={store} />} />
               <Route path="/excavation" element={<Excavation store={store} />} />
@@ -255,17 +258,36 @@ const barterAssetTypeLabels: Record<BarterAssetType, string> = {
   other: 'Другое имущество',
 }
 
-const barterStatusLabel = {
-  active: 'Активный',
-  partial: 'Частично списан',
-  written_off: 'Полностью списан',
-  owned: 'Наш актив',
+const barterDealStatusLabel = {
+  pending: 'Ожидает проверки',
+  accepted: 'Принят',
+  sold: 'Продан',
+  cancelled: 'Отменен',
 }
 
 const addDaysIso = (days: number) => {
   const date = new Date()
   date.setDate(date.getDate() + days)
   return date.toISOString().slice(0, 10)
+}
+
+const cementSummary = (movements: CementMovement[]) => {
+  const active = movements.filter((item) => !item.annulled)
+  const incoming = active.filter((item) => item.type === 'incoming')
+  const usage = active.filter((item) => item.type === 'usage')
+  const totalIncomingTons = incoming.reduce((sum, item) => sum + item.tons, 0)
+  const totalUsedTons = usage.reduce((sum, item) => sum + item.tons, 0)
+  const totalIncomingCost = incoming.reduce((sum, item) => sum + item.total_cost, 0)
+  const avgCost = totalIncomingTons ? totalIncomingCost / totalIncomingTons : 0
+  const estimatedUsedCost = usage.reduce((sum, item) => sum + (item.total_cost || item.tons * avgCost), 0)
+  return {
+    totalIncomingTons,
+    totalUsedTons,
+    remainingTons: totalIncomingTons - totalUsedTons,
+    totalIncomingCost,
+    estimatedUsedCost,
+    avgCost,
+  }
 }
 
 const labStatusLabel = {
@@ -361,7 +383,7 @@ function Topbar({ store, onDelivery }: { store: Store; onDelivery: () => void })
 }
 
 function LoginPage({ onLogin }: { onLogin: (login: string, password: string) => Promise<true | string> }) {
-  const [login, setLogin] = useState('Adham')
+  const [login, setLogin] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -377,7 +399,7 @@ function LoginPage({ onLogin }: { onLogin: (login: string, password: string) => 
 
   return (
     <main className="login-screen">
-      <form className="login-card glass-panel" onSubmit={submit}>
+      <form className="login-card glass-panel" onSubmit={submit} autoComplete="off">
         <div className="brand center">
           <div className="brand-mark">C</div>
           <div>
@@ -387,8 +409,8 @@ function LoginPage({ onLogin }: { onLogin: (login: string, password: string) => 
         </div>
         <h1>Вход в систему</h1>
         <p>Безопасный вход администратора через Supabase Auth.</p>
-        <Field label="Логин" value={login} onChange={setLogin} />
-        <Field label="Пароль" value={password} onChange={setPassword} type="password" />
+        <Field label="Логин" value={login} onChange={setLogin} autoComplete="off" />
+        <Field label="Пароль" value={password} onChange={setPassword} type="password" autoComplete="new-password" />
         {error && <p className="error-text">{error}</p>}
         <button className="primary full" disabled={submitting}>{submitting ? 'Проверяем доступ...' : 'Войти'}</button>
       </form>
@@ -708,7 +730,7 @@ function ClientDetail({ store }: { store: Store }) {
     },
     { title: 'Поставки бетона', rows: exportRows },
     { title: 'Оплаты', rows: payments.map((payment) => ({ Дата: payment.date, Описание: payment.description, Сумма: money(payment.amount) })) },
-    { title: 'Бартер', rows: barterAssets.map((asset) => ({ Тип: barterAssetTypeLabels[asset.type], Название: asset.asset_name, Стоимость: money(asset.market_value), Себестоимость: money(asset.cost_price), Использовано: money(asset.used_amount), Остаток: money(asset.remaining_amount), Статус: barterStatusLabel[asset.status] })) },
+    { title: 'Бартер', rows: barterAssets.map((asset) => ({ Тип: barterAssetTypeLabels[asset.type], Название: asset.asset_name, Стоимость: money(asset.market_value), Наличные: money(asset.cash_paid ?? 0), Бартер: money(asset.barter_value ?? asset.market_value), Итого: money(asset.total_paid_value ?? 0), Остаток: money(asset.remaining_debt ?? 0), Статус: barterDealStatusLabel[asset.asset_status ?? 'accepted'] })) },
     {
       title: 'Итог',
       items: [
@@ -840,7 +862,11 @@ function ClientDetail({ store }: { store: Store }) {
                   <tr>
                     <th>Тип</th>
                     <th>Название</th>
-                    <th>Рыночная стоимость</th>
+                    <th>Оценочная стоимость</th>
+                    <th>Наличные</th>
+                    <th>Бартер</th>
+                    <th>Итого оплачено</th>
+                    <th>Остаток долга</th>
                     <th>Себестоимость</th>
                     <th>Использовано</th>
                     <th>Остаток</th>
@@ -855,12 +881,16 @@ function ClientDetail({ store }: { store: Store }) {
                       <td>{barterAssetTypeLabels[asset.type]}</td>
                       <td>{asset.asset_name}<small>{asset.comment}</small></td>
                       <td>{money(asset.market_value)}</td>
+                      <td className="blue-text">{money(asset.cash_paid ?? 0)}</td>
+                      <td className="purple-text">{money(asset.barter_value ?? asset.market_value)}</td>
+                      <td className="green-text">{money(asset.total_paid_value ?? (asset.cash_paid ?? 0) + (asset.barter_value ?? asset.market_value))}</td>
+                      <td className="amber-text">{money(asset.remaining_debt ?? 0)}</td>
                       <td>{money(asset.cost_price)}</td>
                       <td className="purple-text">{money(asset.used_amount)}</td>
                       <td>{money(asset.remaining_amount)}</td>
                       <td>
                         <span className={asset.remaining_amount === 0 ? 'tag tag-green' : asset.used_amount > 0 ? 'tag tag-amber' : 'tag tag-blue'}>
-                          {barterStatusLabel[asset.status]}
+                          {barterDealStatusLabel[asset.asset_status ?? 'accepted']}
                         </span>
                         {asset.remaining_amount === 0 && <small className="green-text">Наш актив</small>}
                       </td>
@@ -1002,10 +1032,111 @@ function Finance({ store }: { store: Store }) {
   )
 }
 
+function Cement({ store }: { store: Store }) {
+  const [open, setOpen] = useState<'incoming' | 'usage' | null>(null)
+  const [query, setQuery] = useState('')
+  const [month, setMonth] = useState('')
+  const rows = store.data.cement_movements
+    .filter((item) => !item.annulled)
+    .filter((item) => !month || item.date.startsWith(month))
+    .filter((item) => {
+      const text = `${item.supplier ?? ''} ${item.reason ?? ''} ${item.project ?? ''} ${item.client_name ?? ''} ${item.notes ?? ''}`.toLowerCase()
+      return text.includes(query.toLowerCase())
+    })
+  const totals = cementSummary(store.data.cement_movements)
+  const exportRows = rows.map((row) => ({
+    Дата: row.date,
+    Тип: row.type === 'incoming' ? 'Приход' : 'Расход',
+    Поставщик: row.supplier ?? '',
+    Причина: row.reason ?? row.project ?? '',
+    Тонны: row.tons,
+    Цена: row.price_per_ton ?? 0,
+    Сумма: row.total_cost,
+  }))
+
+  return (
+    <>
+      <PageHeader
+        title="Цемент"
+        subtitle="Складской учет прихода, расхода и остатка цемента."
+        action={<div className="toolbar compact"><ExportButtons title="Цемент" rows={exportRows} filename="cement-movements" />{store.canManage && <button className="primary" onClick={() => setOpen('incoming')}><Plus size={18} /> Приход</button>}{store.canManage && <button className="secondary" onClick={() => setOpen('usage')}><Plus size={18} /> Расход</button>}</div>}
+      />
+      <div className="kpi-grid four">
+        <Kpi title="Поступило" value={`${numberRu(totals.totalIncomingTons, 2)} т`} />
+        <Kpi title="Использовано" value={`${numberRu(totals.totalUsedTons, 2)} т`} tone="amber" />
+        <Kpi title="Остаток" value={`${numberRu(totals.remainingTons, 2)} т`} tone={totals.remainingTons >= 0 ? 'green' : 'red'} />
+        <Kpi title="Стоимость прихода" value={money(totals.totalIncomingCost)} />
+        <Kpi title="Оценка расхода" value={money(totals.estimatedUsedCost)} tone="red" />
+      </div>
+      <div className="toolbar">
+        <label className="search small">
+          <Search size={18} />
+          <input placeholder="Поиск по поставщику, объекту, клиенту..." value={query} onChange={(event) => setQuery(event.target.value)} />
+        </label>
+        <Field label="Месяц" value={month} onChange={setMonth} type="month" />
+      </div>
+      <div className="cement-cards">
+        {rows.length ? rows.map((row) => (
+          <Card className="cement-card" key={row.id}>
+            <div className="card-title">
+              <div>
+                <span className={row.type === 'incoming' ? 'tag tag-green' : 'tag tag-amber'}>{row.type === 'incoming' ? 'Приход' : 'Расход'}</span>
+                <h2>{row.type === 'incoming' ? row.supplier || 'Поставка цемента' : row.reason || row.project || 'Использование цемента'}</h2>
+                <p>{new Date(row.date).toLocaleDateString('ru-RU')} · {row.notes}</p>
+              </div>
+              {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('cement_movements', row.id, row.supplier ?? row.reason ?? row.id, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
+            </div>
+            <div className="kotlovan-metrics">
+              <Info label="Тонны" value={`${numberRu(row.tons, 2)} т`} />
+              <Info label="Цена за тонну" value={money(row.price_per_ton ?? 0)} />
+              <Info label="Сумма" value={money(row.total_cost)} tone={row.type === 'incoming' ? 'blue' : 'red'} />
+              <Info label="Клиент / объект" value={row.client_name ?? row.project ?? '-'} />
+            </div>
+          </Card>
+        )) : <EmptyState title="Движений цемента пока нет" />}
+      </div>
+      {open && <CementModal type={open} store={store} onClose={() => setOpen(null)} />}
+    </>
+  )
+}
+
 function Daily({ store }: { store: Store }) {
-  const [report, setReport] = useState<DailyReport | undefined>(store.data.daily_reports.find((item) => !item.annulled) ?? store.data.daily_reports[0])
+  const [report, setReport] = useState<DailyReport | undefined>(store.data.daily_reports.find((item) => !item.annulled) ?? {
+    id: crypto.randomUUID(),
+    date: new Date().toISOString().slice(0, 10),
+    items: [],
+    cement_t: 0,
+    gravel_t: 0,
+    sand_t: 0,
+    additives_l: 0,
+    salary_expense: 0,
+    fuel_expense: 0,
+  })
   if (!report) return <EmptyState title="Ежедневных отчетов пока нет" />
   const totals = dailyTotals(report)
+  const day = report.date
+  const deliveries = store.data.client_reports.filter((item) => item.date === day && !item.annulled)
+  const payments = store.data.finance_transactions.filter((item) => item.date === day && item.category === 'Оплата' && !item.annulled)
+  const financeIncome = store.data.finance_transactions.filter((item) => item.date === day && item.type === 'income' && item.category !== 'Оплата' && !item.annulled)
+  const financeExpenses = store.data.finance_transactions.filter((item) => item.date === day && item.type === 'expense' && !item.annulled)
+  const barterActivity = store.data.barter_assets.filter((item) => item.created_at?.slice(0, 10) === day)
+  const cementDay = store.data.cement_movements.filter((item) => item.date === day && !item.annulled)
+  const cementAll = cementSummary(store.data.cement_movements)
+  const excavationDay = store.data.excavation_reports.filter((item) => item.date === day && !item.annulled && !item.archived)
+  const excavationDayTotals = aggregateExcavation(excavationDay)
+  const cementReceived = cementDay.filter((item) => item.type === 'incoming').reduce((sum, item) => sum + item.tons, 0)
+  const cementUsed = cementDay.filter((item) => item.type === 'usage').reduce((sum, item) => sum + item.tons, 0)
+  const integratedIncome = totals.income + deliveries.reduce((sum, item) => sum + item.amount, 0) + payments.reduce((sum, item) => sum + item.amount, 0) + financeIncome.reduce((sum, item) => sum + item.amount, 0) + barterActivity.reduce((sum, item) => sum + (item.total_paid_value ?? item.market_value), 0) + excavationDayTotals.totalIncome
+  const integratedExpense = totals.expenses + financeExpenses.reduce((sum, item) => sum + item.amount, 0) + cementDay.reduce((sum, item) => sum + item.total_cost, 0) + excavationDayTotals.totalExpenses
+  const integratedRows = [
+    ...deliveries.map((item) => ({ Раздел: 'Бетон', Описание: `${item.object_name} · ${item.concrete_grade}`, Приход: item.amount, Расход: 0 })),
+    ...payments.map((item) => ({ Раздел: 'Оплаты', Описание: item.description, Приход: item.amount, Расход: 0 })),
+    ...financeIncome.map((item) => ({ Раздел: 'Финансы', Описание: item.description, Приход: item.amount, Расход: 0 })),
+    ...financeExpenses.map((item) => ({ Раздел: 'Расходы', Описание: item.description, Приход: 0, Расход: item.amount })),
+    ...barterActivity.map((item) => ({ Раздел: 'Бартер', Описание: item.asset_name, Приход: item.total_paid_value ?? item.market_value, Расход: 0 })),
+    ...cementDay.map((item) => ({ Раздел: 'Цемент', Описание: item.type === 'incoming' ? `Приход ${item.tons} т` : `Расход ${item.tons} т`, Приход: item.type === 'incoming' ? 0 : 0, Расход: item.total_cost })),
+    ...excavationDay.map((item) => ({ Раздел: 'Котлован', Описание: item.object_name, Приход: excavationTotals(item).totalIncome, Расход: excavationTotals(item).totalExpenses })),
+  ]
   const updateItem = (itemId: string, key: keyof DailyReportItem, value: string) => {
     setReport((current) => ({
       ...current!,
@@ -1036,12 +1167,15 @@ function Daily({ store }: { store: Store }) {
     {
       title: 'Итог',
       items: [
-        { label: 'Доход', value: money(totals.income) },
-        { label: 'Расход', value: money(totals.expenses) },
-        { label: 'Прибыль', value: money(totals.profit) },
-        { label: 'Рентабельность', value: `${numberRu(totals.profitability, 1)}%` },
+        { label: 'Доход', value: money(integratedIncome) },
+        { label: 'Расход', value: money(integratedExpense) },
+        { label: 'Результат', value: money(integratedIncome - integratedExpense) },
+        { label: 'Цемент получено', value: `${numberRu(cementReceived, 2)} т` },
+        { label: 'Цемент использовано', value: `${numberRu(cementUsed, 2)} т` },
+        { label: 'Остаток цемента', value: `${numberRu(cementAll.remainingTons, 2)} т` },
       ],
     },
+    { title: 'Сводные операции дня', rows: integratedRows },
   ]
 
   return (
@@ -1049,8 +1183,14 @@ function Daily({ store }: { store: Store }) {
       <PageHeader
         title="Ежедневный отчет"
         subtitle={new Date(report.date).toLocaleDateString('ru-RU')}
-        action={<button className="secondary"><Calendar size={18} /> Выбрать дату</button>}
+        action={<Field label="Дата отчета" value={report.date} onChange={(v) => setReport({ ...report, date: v })} type="date" />}
       />
+      <div className="kpi-grid four">
+        <Kpi title="Доход дня" value={money(integratedIncome)} />
+        <Kpi title="Расход дня" value={money(integratedExpense)} tone="red" />
+        <Kpi title="Результат" value={money(integratedIncome - integratedExpense)} tone={integratedIncome - integratedExpense >= 0 ? 'green' : 'red'} />
+        <Kpi title="Остаток цемента" value={`${numberRu(cementAll.remainingTons, 2)} т`} tone="amber" />
+      </div>
       <div className="daily-grid">
         <Card>
           <div className="card-title">
@@ -1095,13 +1235,33 @@ function Daily({ store }: { store: Store }) {
           </Card>
           <Card className="summary-card">
             <h2>Сводка</h2>
-            <SummaryLine label="Итого (Доход)" value={money(totals.income)} />
-            <SummaryLine label="Расходы (Общие)" value={money(totals.expenses)} tone="red" />
-            <SummaryLine label="Прибыль" value={money(totals.profit)} tone="green" />
-            <SummaryLine label="Рентабельность" value={`${numberRu(totals.profitability, 1)}%`} />
+            <SummaryLine label="Итого доход" value={money(integratedIncome)} />
+            <SummaryLine label="Итого расход" value={money(integratedExpense)} tone="red" />
+            <SummaryLine label="Чистый результат" value={money(integratedIncome - integratedExpense)} tone={integratedIncome - integratedExpense >= 0 ? 'green' : 'red'} />
+            <SummaryLine label="Цемент получено" value={`${numberRu(cementReceived, 2)} т`} />
+            <SummaryLine label="Цемент использовано" value={`${numberRu(cementUsed, 2)} т`} tone="amber" />
+            <SummaryLine label="Остаток цемента" value={`${numberRu(cementAll.remainingTons, 2)} т`} />
           </Card>
         </aside>
       </div>
+      <Card>
+        <h2>Сводные операции дня</h2>
+        {integratedRows.length ? (
+          <table className="crm-table compact-table">
+            <thead><tr><th>Раздел</th><th>Описание</th><th>Приход</th><th>Расход</th></tr></thead>
+            <tbody>
+              {integratedRows.map((row, index) => (
+                <tr key={`${row.Раздел}-${index}`}>
+                  <td><span className="pill blue">{row.Раздел}</span></td>
+                  <td>{row.Описание}</td>
+                  <td className="green-text">{row.Приход ? money(row.Приход) : '-'}</td>
+                  <td className="red-text">{row.Расход ? money(row.Расход) : '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <p className="muted-text">За выбранную дату операций пока нет.</p>}
+      </Card>
       <div className="bottom-bar">
         <ExportButtons title="Ежедневный отчет" rows={rows} filename="daily-report" />
         <button className="secondary" onClick={() => exportReportPdf('Ежедневный отчет', dailySections, 'daily-report', { subtitle: new Date(report.date).toLocaleDateString('ru-RU') })}><FileText size={18} /> PDF</button>
@@ -1474,7 +1634,7 @@ function RecentActivity({ store }: { store: Store }) {
 }
 
 function ClientModal({ client, onClose, onSave, onUpdate }: { client?: Client; onClose: () => void; onSave: (client: Omit<Client, 'id' | 'updated_at'>) => Promise<void>; onUpdate?: (client: Client) => Promise<void> }) {
-  const [form, setForm] = useState(client ?? { name: '', login: '', phone: '+992 ', password: '', contract_type: '100% cash / Без бартера', contract_total: 0, cash_percent: 100, barter_percent: 0, balance: 0, cash_available: 0, total_supplied_m3: 0, total_paid: 0, total_barter_value: 0, status: 'active' as Status, updated_at: '' })
+  const [form, setForm] = useState(client ?? { name: '', login: '', phone: '+992 ', contract_type: '100% cash / Без бартера', contract_total: 0, cash_percent: 100, barter_percent: 0, balance: 0, cash_available: 0, total_supplied_m3: 0, total_paid: 0, total_barter_value: 0, status: 'active' as Status, updated_at: '' })
   const [error, setError] = useState('')
   const changeContract = (value: string) => {
     const option = contractOptions.find((item) => item.value === value)
@@ -1494,8 +1654,9 @@ function ClientModal({ client, onClose, onSave, onUpdate }: { client?: Client; o
       setError('Сумма процентов наличных и бартера должна быть ровно 100%.')
       return
     }
-    if (client && onUpdate) await onUpdate(form as Client)
-    else await onSave(form)
+    const safeLogin = form.login || `client-${Date.now()}`
+    if (client && onUpdate) await onUpdate({ ...form, login: safeLogin } as Client)
+    else await onSave({ ...form, login: safeLogin })
     onClose()
   }
   return (
@@ -1504,8 +1665,6 @@ function ClientModal({ client, onClose, onSave, onUpdate }: { client?: Client; o
       <div className="form-grid two-cols">
         <Field label="Название клиента" value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="Введите название" />
         <Field label="Телефон" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
-        <Field label="Логин" value={form.login} onChange={(v) => setForm({ ...form, login: v })} placeholder="Уникальный логин" />
-        <Field label="Пароль" value={form.password ?? ''} onChange={(v) => setForm({ ...form, password: v })} type="password" />
       </div>
       <h3>Детали контракта</h3>
       <SelectField label="Тип договора" value={form.contract_type} onChange={changeContract} options={contractOptions.map(({ value, label }) => ({ value, label }))} />
@@ -1535,6 +1694,10 @@ function BarterAssetModal({ client, store, onClose }: { client: Client; store: S
     asset_name: '',
     market_value: 0,
     cost_price: 0,
+    linked_contract_amount: 0,
+    cash_paid: 0,
+    barter_value: 0,
+    asset_status: 'accepted' as const,
     photos: [] as string[],
     comment: '',
     apartment_number: '',
@@ -1561,6 +1724,9 @@ function BarterAssetModal({ client, store, onClose }: { client: Client; store: S
   })
   const [error, setError] = useState('')
   const set = (key: keyof typeof form, value: string | number | string[]) => setForm((current) => ({ ...current, [key]: value }))
+  const effectiveBarterValue = Number(form.barter_value || form.market_value || 0)
+  const totalPaidValue = Number(form.cash_paid || 0) + effectiveBarterValue
+  const remainingDebt = Math.max(Number(form.linked_contract_amount || 0) - totalPaidValue, 0)
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!form.type || form.market_value <= 0) {
@@ -1568,7 +1734,7 @@ function BarterAssetModal({ client, store, onClose }: { client: Client; store: S
       return
     }
     const assetName = form.asset_name || buildAssetName(form)
-    await store.api.addBarterAsset({ ...form, asset_name: assetName })
+    await store.api.addBarterAsset({ ...form, asset_name: assetName, barter_value: effectiveBarterValue, total_paid_value: totalPaidValue, remaining_debt: remainingDebt })
     onClose()
   }
 
@@ -1577,10 +1743,14 @@ function BarterAssetModal({ client, store, onClose }: { client: Client; store: S
       <div className="form-grid three-cols">
         <SelectField label="Тип актива" value={form.type} onChange={(v) => set('type', v as BarterAssetType)} options={Object.entries(barterAssetTypeLabels).map(([value, label]) => ({ value, label }))} />
         <Field label="Название актива" value={form.asset_name} onChange={(v) => set('asset_name', v)} placeholder="Например Toyota Camry 2020" />
-        <Field label="Рыночная стоимость (TJS)" value={form.market_value} onChange={(v) => set('market_value', Number(v))} type="number" />
+        <Field label="Оценочная стоимость (TJS)" value={form.market_value} onChange={(v) => set('market_value', Number(v))} type="number" />
+        <Field label="Сумма договора / бетона" value={form.linked_contract_amount} onChange={(v) => set('linked_contract_amount', Number(v))} type="number" />
+        <Field label="Оплачено наличными" value={form.cash_paid} onChange={(v) => set('cash_paid', Number(v))} type="number" />
+        <Field label="Стоимость бартера" value={form.barter_value} onChange={(v) => set('barter_value', Number(v))} type="number" />
+        <Field label="Всего оплачено" value={totalPaidValue} onChange={() => undefined} type="number" />
+        <Field label="Остаток долга" value={remainingDebt} onChange={() => undefined} type="number" />
         <Field label="Себестоимость (TJS)" value={form.cost_price} onChange={(v) => set('cost_price', Number(v))} type="number" />
-        <Field label="Остаток стоимости" value={form.market_value} onChange={() => undefined} type="number" />
-        <Field label="Статус" value="Активный" onChange={() => undefined} />
+        <SelectField label="Статус сделки" value={form.asset_status} onChange={(v) => set('asset_status', v)} options={Object.entries(barterDealStatusLabel).map(([value, label]) => ({ value, label }))} />
         <Field label="Комментарий" value={form.comment} onChange={(v) => set('comment', v)} />
       </div>
 
@@ -1950,6 +2120,55 @@ function emptyExcavation(): ExcavationReport {
   }
 }
 
+function CementModal({ type, store, onClose }: { type: 'incoming' | 'usage'; store: Store; onClose: () => void }) {
+  const [form, setForm] = useState({
+    date: new Date().toISOString().slice(0, 10),
+    type,
+    supplier: '',
+    tons: 0,
+    price_per_ton: 0,
+    reason: '',
+    project: '',
+    client_id: '',
+    client_name: '',
+    notes: '',
+  })
+  const totalCost = Number(form.tons || 0) * Number(form.price_per_ton || 0)
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    const client = store.data.clients.find((item) => item.id === form.client_id)
+    await store.api.addCementMovement({
+      ...form,
+      client_name: client?.name ?? form.client_name,
+      type,
+    })
+    onClose()
+  }
+
+  return (
+    <Modal title={type === 'incoming' ? 'Приход цемента' : 'Расход цемента'} subtitle="Сохраните движение цемента для склада и ежедневного отчета." onClose={onClose} onSubmit={submit}>
+      <div className="form-grid two-cols">
+        <Field label="Дата" value={form.date} onChange={(v) => setForm({ ...form, date: v })} type="date" />
+        {type === 'incoming' ? (
+          <Field label="Поставщик" value={form.supplier} onChange={(v) => setForm({ ...form, supplier: v })} />
+        ) : (
+          <Field label="Причина / назначение" value={form.reason} onChange={(v) => setForm({ ...form, reason: v })} />
+        )}
+        <Field label={type === 'incoming' ? 'Получено тонн' : 'Использовано тонн'} value={form.tons} onChange={(v) => setForm({ ...form, tons: Number(v) })} type="number" min={0} />
+        <Field label="Цена за тонну" value={form.price_per_ton} onChange={(v) => setForm({ ...form, price_per_ton: Number(v) })} type="number" min={0} />
+        {type === 'usage' && (
+          <>
+            <SelectField label="Клиент" value={form.client_id} onChange={(v) => setForm({ ...form, client_id: v })} options={[{ value: '', label: 'Не выбран' }, ...store.data.clients.map((client) => ({ value: client.id, label: client.name }))]} />
+            <Field label="Проект / заказ" value={form.project} onChange={(v) => setForm({ ...form, project: v })} />
+          </>
+        )}
+        <Field label="Сумма" value={totalCost} onChange={() => undefined} type="number" />
+        <Field label="Примечание" value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} />
+      </div>
+    </Modal>
+  )
+}
+
 function Modal({ title, subtitle, children, onClose, onSubmit }: { title: string; subtitle?: string; children: ReactNode; onClose: () => void; onSubmit: (event: FormEvent) => void }) {
   return (
     <div className="modal-backdrop">
@@ -1989,14 +2208,14 @@ function AdminActionButton({ children, className, action }: { children: ReactNod
   )
 }
 
-function Field({ label, value, onChange, type = 'text', placeholder, min, max }: { label: string; value: string | number; onChange: (value: string) => void; type?: string; placeholder?: string; min?: number; max?: number }) {
+function Field({ label, value, onChange, type = 'text', placeholder, min, max, autoComplete }: { label: string; value: string | number; onChange: (value: string) => void; type?: string; placeholder?: string; min?: number; max?: number; autoComplete?: string }) {
   return (
     <label className="field">
       <span>{label}</span>
       {type === 'number' ? (
         <NumberInput value={value} onChange={onChange} placeholder={placeholder} min={min} max={max} />
       ) : (
-        <input value={value} type={type} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+        <input value={value} type={type} placeholder={placeholder} autoComplete={autoComplete} name={autoComplete === 'new-password' ? `no-password-${crypto.randomUUID()}` : undefined} onChange={(event) => onChange(event.target.value)} />
       )}
     </label>
   )

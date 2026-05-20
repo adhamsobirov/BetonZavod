@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   AppData,
   BarterAsset,
+  CementMovement,
   Client,
   ClientReport,
   DailyReport,
@@ -15,6 +16,20 @@ import { hasSupabaseEnv, supabase } from './supabase'
 
 const STORAGE_KEY = 'concrete-supply-crm-data'
 
+const emptyData: AppData = {
+  profile: { id: '', full_name: '', login: '', role: 'operator', email: '', avatar_url: '' },
+  clients: [],
+  client_reports: [],
+  barter_assets: [],
+  finance_transactions: [],
+  daily_reports: [],
+  invoices: [],
+  lab_reports: [],
+  excavation_reports: [],
+  cement_movements: [],
+  activity_logs: [],
+}
+
 const readLocal = (): AppData => {
   const raw = localStorage.getItem(STORAGE_KEY)
   if (!raw) return normalizeData(seedData)
@@ -27,10 +42,13 @@ const readLocal = (): AppData => {
 
 const normalizeData = (data: AppData): AppData => ({
   ...data,
+  finance_transactions: data.finance_transactions ?? [],
+  daily_reports: data.daily_reports ?? [],
+  invoices: data.invoices ?? [],
   profile: {
     ...data.profile,
     full_name: data.profile.full_name ?? 'Адхам',
-    login: data.profile.login ?? 'Adham',
+    login: data.profile.login ?? '',
     role: data.profile.role ?? 'operator',
     email: data.profile.email ?? '',
   },
@@ -40,6 +58,12 @@ const normalizeData = (data: AppData): AppData => ({
     return {
       ...asset,
       cost_price: asset.cost_price ?? 0,
+      linked_contract_amount: asset.linked_contract_amount ?? asset.market_value,
+      cash_paid: asset.cash_paid ?? 0,
+      barter_value: asset.barter_value ?? asset.market_value,
+      total_paid_value: asset.total_paid_value ?? (asset.cash_paid ?? 0) + (asset.barter_value ?? asset.market_value),
+      remaining_debt: asset.remaining_debt ?? Math.max((asset.linked_contract_amount ?? asset.market_value) - ((asset.cash_paid ?? 0) + (asset.barter_value ?? asset.market_value)), 0),
+      asset_status: asset.asset_status ?? (asset.status === 'written_off' || asset.status === 'owned' ? 'sold' : 'accepted'),
       used_amount: used,
       remaining_amount: remaining,
       status: remaining === 0 ? 'written_off' : used > 0 ? 'partial' : asset.status ?? 'active',
@@ -50,23 +74,22 @@ const normalizeData = (data: AppData): AppData => ({
       updated_at: asset.updated_at ?? now(),
     }
   }),
-  clients: data.clients.map((client) => ({
+  clients: (data.clients ?? []).map((client) => ({
     ...client,
-    password: client.password ?? '123456',
     contract_total: client.contract_total ?? 0,
-    total_supplied_m3: client.total_supplied_m3 ?? data.client_reports.filter((report) => report.client_id === client.id && !report.annulled).reduce((sum, report) => sum + report.volume_m3, 0),
-    total_paid: client.total_paid ?? data.client_reports.filter((report) => report.client_id === client.id && !report.annulled).reduce((sum, report) => sum + report.paid_amount, 0),
-    cash_available: client.cash_available ?? Math.max((client.total_paid ?? 0) - data.client_reports.filter((report) => report.client_id === client.id && !report.annulled).reduce((sum, report) => sum + report.paid_amount, 0), 0),
-    total_barter_value: client.total_barter_value ?? data.client_reports.filter((report) => report.client_id === client.id && !report.annulled).reduce((sum, report) => sum + report.barter_amount, 0),
+    total_supplied_m3: client.total_supplied_m3 ?? (data.client_reports ?? []).filter((report) => report.client_id === client.id && !report.annulled).reduce((sum, report) => sum + report.volume_m3, 0),
+    total_paid: client.total_paid ?? (data.client_reports ?? []).filter((report) => report.client_id === client.id && !report.annulled).reduce((sum, report) => sum + report.paid_amount, 0),
+    cash_available: client.cash_available ?? Math.max((client.total_paid ?? 0) - (data.client_reports ?? []).filter((report) => report.client_id === client.id && !report.annulled).reduce((sum, report) => sum + report.paid_amount, 0), 0),
+    total_barter_value: client.total_barter_value ?? (data.client_reports ?? []).filter((report) => report.client_id === client.id && !report.annulled).reduce((sum, report) => sum + report.barter_amount, 0),
   })),
-  client_reports: data.client_reports.map((report) => ({
+  client_reports: (data.client_reports ?? []).map((report) => ({
     ...report,
     cash_amount: report.cash_amount ?? Math.max(report.amount - report.barter_amount, 0),
     transport_cost: report.transport_cost ?? 0,
     trip_count: report.trip_count ?? 0,
     comment: report.comment ?? '',
   })),
-  lab_reports: data.lab_reports.map((report) => {
+  lab_reports: (data.lab_reports ?? []).map((report) => {
     const legacyStatus = report.status as unknown as string
     return {
       ...report,
@@ -75,14 +98,23 @@ const normalizeData = (data: AppData): AppData => ({
       status: legacyStatus === 'completed' ? 'passed' : legacyStatus === 'in_progress' ? 'pending' : report.status,
     }
   }),
-  excavation_reports: data.excavation_reports.map((report) => ({
+  excavation_reports: (data.excavation_reports ?? []).map((report) => ({
     ...report,
     total_volume_m3: report.total_volume_m3 ?? report.excavation_m3,
     completed_volume_m3: report.completed_volume_m3 ?? report.excavation_m3,
     paid_amount: report.paid_amount ?? report.received_payment,
     expenses: report.expenses ?? report.diesel_liters * report.diesel_price + report.worker_salary + report.machinery_rent + report.other_expenses,
   })),
-  activity_logs: data.activity_logs.map((log) => ({
+  cement_movements: (data.cement_movements ?? []).map((movement) => ({
+    ...movement,
+    tons: movement.tons ?? 0,
+    price_per_ton: movement.price_per_ton ?? 0,
+    total_cost: movement.total_cost ?? (movement.tons ?? 0) * (movement.price_per_ton ?? 0),
+    notes: movement.notes ?? '',
+    created_at: movement.created_at ?? now(),
+    updated_at: movement.updated_at ?? now(),
+  })),
+  activity_logs: (data.activity_logs ?? []).map((log) => ({
     ...log,
     module: moduleRu[log.module] ?? log.module,
     description: log.description.replaceAll('₽', 'сомони').replaceAll('руб.', 'сомони').replaceAll('рублей', 'сомони'),
@@ -93,6 +125,7 @@ const writeLocal = (data: AppData) => localStorage.setItem(STORAGE_KEY, JSON.str
 
 const now = () => new Date().toISOString()
 const id = () => crypto.randomUUID()
+const moneyText = (value: number) => `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Number.isFinite(value) ? value : 0)} сомони`
 
 const moduleRu: Record<string, string> = {
   Dashboard: 'Дашборд',
@@ -137,14 +170,15 @@ const allocateBarterAssets = (assets: BarterAsset[], clientId: string, amount: n
 }
 
 const tableNames = [
-    'clients',
-    'client_reports',
+  'clients',
+  'client_reports',
   'barter_assets',
   'finance_transactions',
   'daily_reports',
   'invoices',
   'lab_reports',
   'excavation_reports',
+  'cement_movements',
   'activity_logs',
 ] as const
 
@@ -159,11 +193,12 @@ const tableLabel: Partial<Record<MutableTable, string>> = {
   invoices: 'счет',
   lab_reports: 'лабораторный отчет',
   excavation_reports: 'отчет по котловану',
+  cement_movements: 'движение цемента',
   activity_logs: 'запись журнала',
 }
 
 export function useCrmStore(enabled = true) {
-  const [data, setData] = useState<AppData>(() => (hasSupabaseEnv ? normalizeData(seedData) : readLocal()))
+  const [data, setData] = useState<AppData>(() => (hasSupabaseEnv ? normalizeData(emptyData) : readLocal()))
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState('')
 
@@ -185,7 +220,8 @@ export function useCrmStore(enabled = true) {
         return
       }
 
-      const next = { ...seedData }
+      setLoading(true)
+      const next = { ...emptyData }
       for (const table of tableNames) {
         const { data: rows, error } = await supabase.from(table).select('*').order('created_at', { ascending: false })
         if (!error && rows && active) {
@@ -259,28 +295,103 @@ export function useCrmStore(enabled = true) {
           notify('Укажите тип и рыночную стоимость бартерного актива')
           return
         }
+        const cashPaid = Math.max(asset.cash_paid ?? 0, 0)
+        const barterValue = Math.max(asset.barter_value ?? asset.market_value, 0)
+        const linkedContractAmount = Math.max(asset.linked_contract_amount ?? asset.market_value, 0)
+        const totalPaidValue = cashPaid + barterValue
+        const remainingDebt = Math.max(linkedContractAmount - totalPaidValue, 0)
         const row: BarterAsset = {
           ...asset,
           id: id(),
           used_amount: 0,
-          remaining_amount: asset.market_value,
+          remaining_amount: barterValue,
           status: 'active',
+          linked_contract_amount: linkedContractAmount,
+          cash_paid: cashPaid,
+          barter_value: barterValue,
+          total_paid_value: totalPaidValue,
+          remaining_debt: remainingDebt,
+          asset_status: asset.asset_status ?? 'accepted',
           source_client_name: data.clients.find((client) => client.id === asset.client_id)?.name,
           photos: asset.photos ?? [],
           created_at: now(),
           updated_at: now(),
         }
+        const cashFinance: FinanceTransaction | undefined = cashPaid > 0 ? {
+          id: id(),
+          client_id: row.client_id,
+          date: new Date().toISOString().slice(0, 10),
+          category: 'Оплата',
+          type: 'income',
+          description: `Наличная часть по бартеру: ${row.asset_name}`,
+          amount: cashPaid,
+          status: 'paid',
+        } : undefined
+        const barterFinance: FinanceTransaction = {
+          id: id(),
+          client_id: row.client_id,
+          date: new Date().toISOString().slice(0, 10),
+          category: 'Бартер',
+          type: 'barter',
+          description: `Бартерный актив: ${row.asset_name}`,
+          amount: barterValue,
+          status: 'paid',
+        }
+        const financeRows = [cashFinance, barterFinance].filter(Boolean) as FinanceTransaction[]
         setData((current) => ({
           ...current,
           barter_assets: [row, ...current.barter_assets],
+          finance_transactions: [...financeRows, ...current.finance_transactions],
           clients: current.clients.map((client) =>
             client.id === row.client_id
-              ? { ...client, total_barter_value: (client.total_barter_value ?? 0) + row.market_value, updated_at: now() }
+              ? {
+                  ...client,
+                  balance: Math.min(client.balance + totalPaidValue, 0),
+                  total_paid: (client.total_paid ?? 0) + cashPaid,
+                  cash_available: (client.cash_available ?? 0) + cashPaid,
+                  total_barter_value: (client.total_barter_value ?? 0) + barterValue,
+                  status: client.balance + totalPaidValue < 0 ? 'debt' : 'active',
+                  updated_at: now(),
+                }
               : client,
           ),
         }))
         await saveRow('barter_assets', row)
+        await Promise.all(financeRows.map((finance) => saveRow('finance_transactions', finance)))
         notify('Бартерный актив добавлен')
+      },
+      addCementMovement: async (movement: Omit<CementMovement, 'id' | 'total_cost' | 'created_at' | 'updated_at'>) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        const row: CementMovement = {
+          ...movement,
+          id: id(),
+          tons: Math.max(movement.tons, 0),
+          price_per_ton: movement.price_per_ton ?? 0,
+          total_cost: Math.max(movement.tons, 0) * Math.max(movement.price_per_ton ?? 0, 0),
+          created_at: now(),
+          updated_at: now(),
+        }
+        const financeRow: FinanceTransaction | undefined = row.total_cost > 0 ? {
+          id: id(),
+          date: row.date,
+          category: row.type === 'incoming' ? 'Цемент приход' : 'Цемент расход',
+          type: 'expense',
+          description: row.type === 'incoming' ? `Поступление цемента: ${row.supplier ?? 'поставщик'}` : `Расход цемента: ${row.reason ?? row.project ?? 'производство'}`,
+          amount: row.total_cost,
+          status: 'paid',
+        } : undefined
+        setData((current) => ({
+          ...current,
+          cement_movements: [row, ...current.cement_movements],
+          finance_transactions: financeRow ? [financeRow, ...current.finance_transactions] : current.finance_transactions,
+          activity_logs: [
+            { id: id(), created_at: now(), module: 'Цемент', title: row.type === 'incoming' ? 'Поступление цемента' : 'Расход цемента', description: `${row.tons} т · ${moneyText(row.total_cost)}` },
+            ...current.activity_logs,
+          ],
+        }))
+        await saveRow('cement_movements', row)
+        if (financeRow) await saveRow('finance_transactions', financeRow)
+        notify('Движение цемента сохранено')
       },
       addConcreteDelivery: async (delivery: Omit<ClientReport, 'id' | 'amount' | 'paid_amount' | 'barter_amount' | 'cash_amount'> & { price_per_m3: number }) => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
@@ -462,6 +573,7 @@ export function useCrmStore(enabled = true) {
       },
       adminDelete: async (table: MutableTable, rowId: string, entityName: string, mode: 'delete' | 'annul' = 'delete', reason = '') => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        const barterToReverse = table === 'barter_assets' ? data.barter_assets.find((asset) => asset.id === rowId) : undefined
         const audit = {
           id: id(),
           created_at: now(),
@@ -474,11 +586,48 @@ export function useCrmStore(enabled = true) {
           const nextList = mode === 'delete'
             ? list.filter((item) => item.id !== rowId)
             : list.map((item) => (item.id === rowId ? { ...item, status: 'annulled', annulled: true, updated_at: now() } : item))
-          return { ...current, [table]: nextList, activity_logs: [audit, ...current.activity_logs] }
+          const reversedClients = barterToReverse && mode === 'delete'
+            ? current.clients.map((client) => {
+                if (client.id !== barterToReverse.client_id) return client
+                const cashPaid = barterToReverse.cash_paid ?? 0
+                const barterValue = barterToReverse.barter_value ?? barterToReverse.market_value
+                const totalPaidValue = barterToReverse.total_paid_value ?? cashPaid + barterValue
+                return {
+                  ...client,
+                  balance: client.balance - totalPaidValue,
+                  total_paid: Math.max((client.total_paid ?? 0) - cashPaid, 0),
+                  cash_available: Math.max((client.cash_available ?? 0) - cashPaid, 0),
+                  total_barter_value: Math.max((client.total_barter_value ?? 0) - barterValue, 0),
+                  status: client.balance - totalPaidValue < 0 ? 'debt' : client.status,
+                  updated_at: now(),
+                }
+              })
+            : current.clients
+          return { ...current, clients: reversedClients, [table]: nextList, activity_logs: [audit, ...current.activity_logs] }
         })
         if (hasSupabaseEnv && supabase) {
-          if (mode === 'delete') await supabase.from(table).delete().eq('id', rowId)
-          else await supabase.from(table).update({ status: 'annulled', annulled: true, updated_at: now() }).eq('id', rowId)
+          const result = mode === 'delete'
+            ? await supabase.from(table).delete().eq('id', rowId)
+            : await supabase.from(table).update({ status: 'annulled', annulled: true, updated_at: now() }).eq('id', rowId)
+          if (result.error) {
+            notify(`Ошибка Supabase: ${result.error.message}`)
+            return false
+          }
+          if (barterToReverse && mode === 'delete') {
+            const client = data.clients.find((item) => item.id === barterToReverse.client_id)
+            if (client) {
+              const cashPaid = barterToReverse.cash_paid ?? 0
+              const barterValue = barterToReverse.barter_value ?? barterToReverse.market_value
+              const totalPaidValue = barterToReverse.total_paid_value ?? cashPaid + barterValue
+              await supabase.from('clients').update({
+                balance: client.balance - totalPaidValue,
+                total_paid: Math.max((client.total_paid ?? 0) - cashPaid, 0),
+                cash_available: Math.max((client.cash_available ?? 0) - cashPaid, 0),
+                total_barter_value: Math.max((client.total_barter_value ?? 0) - barterValue, 0),
+                updated_at: now(),
+              }).eq('id', client.id)
+            }
+          }
           await supabase.from('activity_logs').insert(audit)
         }
         notify(mode === 'delete' ? 'Запись удалена' : 'Запись аннулирована')

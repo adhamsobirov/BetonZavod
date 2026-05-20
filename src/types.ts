@@ -3,6 +3,8 @@ export type Status = 'active' | 'pending' | 'debt' | 'archived' | 'paid' | 'unpa
 export type LabStatus = 'pending' | 'passed' | 'failed'
 export type BarterAssetType = 'apartment' | 'car' | 'land' | 'equipment' | 'other'
 export type BarterAssetStatus = 'active' | 'partial' | 'written_off' | 'owned'
+export type BarterDealStatus = 'pending' | 'accepted' | 'sold' | 'cancelled'
+export type CementMovementType = 'incoming' | 'usage'
 
 export type Profile = {
   id: string
@@ -60,6 +62,12 @@ export type BarterAsset = {
   asset_name: string
   market_value: number
   cost_price: number
+  linked_contract_amount?: number
+  cash_paid?: number
+  barter_value?: number
+  total_paid_value?: number
+  remaining_debt?: number
+  asset_status?: BarterDealStatus
   used_amount: number
   remaining_amount: number
   status: BarterAssetStatus
@@ -90,6 +98,24 @@ export type BarterAsset = {
   equipment_year?: string
   created_at: string
   updated_at: string
+}
+
+export type CementMovement = {
+  id: string
+  date: string
+  type: CementMovementType
+  supplier?: string
+  tons: number
+  price_per_ton?: number
+  total_cost: number
+  reason?: string
+  project?: string
+  client_id?: string
+  client_name?: string
+  notes?: string
+  annulled?: boolean
+  created_at?: string
+  updated_at?: string
 }
 
 export type FinanceTransaction = {
@@ -209,5 +235,6 @@ export type AppData = {
   invoices: Invoice[]
   lab_reports: LabReport[]
   excavation_reports: ExcavationReport[]
+  cement_movements: CementMovement[]
   activity_logs: ActivityLog[]
 }
