@@ -65,7 +65,6 @@ const navItems = [
   { label: 'Лаборатория', to: '/lab', icon: FlaskConical },
   { label: 'Котлован', to: '/excavation', icon: Home },
   { label: 'Аналитика', to: '/analytics', icon: FileBarChart },
-  { label: 'Настройки', to: '/settings', icon: Settings },
 ]
 
 const statusLabel: Record<Status, string> = {

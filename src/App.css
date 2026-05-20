@@ -28,7 +28,7 @@ body,
   flex-direction: column;
   padding: 28px 22px calc(24px + env(safe-area-inset-bottom));
   z-index: 20;
-  overflow-y: auto;
+  overflow: hidden;
   overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -49,6 +49,7 @@ body,
   align-items: center;
   gap: 14px;
   margin-bottom: 30px;
+  flex-shrink: 0;
 }
 
 .brand.center {
@@ -85,8 +86,25 @@ body,
 .nav-list {
   display: grid;
   gap: 6px;
-  margin-top: 36px;
+  margin-top: 24px;
+  padding: 0 2px 18px 0;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
+  align-content: start;
+}
+
+.nav-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.nav-list::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
 }
 
 .nav-list a,
@@ -103,6 +121,8 @@ body,
   padding: 13px 14px;
   font-weight: 600;
   text-align: left;
+  min-height: 46px;
+  flex-shrink: 0;
 }
 
 .nav-list a.active {
@@ -122,10 +142,13 @@ body,
 }
 
 .sidebar-foot {
-  margin-top: auto;
+  flex: 0 0 auto;
   border-top: 1px solid var(--line);
   padding-top: 18px;
   padding-bottom: 12px;
+  display: grid;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .main-shell {
@@ -292,6 +315,10 @@ body,
 
 .full {
   width: 100%;
+}
+
+.sidebar > .primary.full {
+  flex-shrink: 0;
 }
 
 .icon-btn,
@@ -1215,8 +1242,7 @@ body,
     transition: transform 0.22s ease;
     z-index: 45;
     padding: calc(22px + env(safe-area-inset-top)) 18px calc(24px + env(safe-area-inset-bottom));
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden;
     overscroll-behavior: contain;
     border-radius: 0 22px 22px 0;
     box-shadow: 18px 0 50px rgba(15, 23, 42, 0.16);
