@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type {
   AppData,
+  AccountingDebt,
   BarterAsset,
   CementMovement,
   Client,
   ClientReport,
   DailyReport,
+  DebtRepayment,
   ExcavationReport,
   FinanceTransaction,
   Invoice,
   LabReport,
   PaymentReceipt,
+  RawMaterialReceipt,
 } from '../types'
 import { seedData } from './seed'
 import { hasSupabaseEnv, supabase } from './supabase'
@@ -24,6 +27,9 @@ const emptyData: AppData = {
   barter_assets: [],
   finance_transactions: [],
   payment_receipts: [],
+  accounting_debts: [],
+  debt_repayments: [],
+  raw_material_receipts: [],
   daily_reports: [],
   invoices: [],
   lab_reports: [],
@@ -52,6 +58,29 @@ const normalizeData = (data: AppData): AppData => ({
     notes: receipt.notes ?? '',
     operator_name: receipt.operator_name ?? data.profile?.full_name ?? 'Администратор',
     created_at: receipt.created_at ?? now(),
+  })),
+  accounting_debts: (data.accounting_debts ?? []).map((debt) => ({
+    ...debt,
+    paid_amount: debt.paid_amount ?? 0,
+    remaining_amount: debt.remaining_amount ?? Math.max(debt.amount - (debt.paid_amount ?? 0), 0),
+    status: debt.status ?? ((debt.paid_amount ?? 0) > 0 ? 'partial' : 'open'),
+    notes: debt.notes ?? '',
+    created_at: debt.created_at ?? now(),
+    updated_at: debt.updated_at ?? now(),
+  })),
+  debt_repayments: (data.debt_repayments ?? []).map((repayment) => ({
+    ...repayment,
+    notes: repayment.notes ?? '',
+    created_at: repayment.created_at ?? now(),
+  })),
+  raw_material_receipts: (data.raw_material_receipts ?? []).map((receipt) => ({
+    ...receipt,
+    quantity: receipt.quantity ?? 0,
+    price: receipt.price ?? 0,
+    amount: receipt.amount ?? (receipt.quantity ?? 0) * (receipt.price ?? 0),
+    notes: receipt.notes ?? '',
+    created_at: receipt.created_at ?? now(),
+    updated_at: receipt.updated_at ?? now(),
   })),
   daily_reports: data.daily_reports ?? [],
   invoices: data.invoices ?? [],
@@ -142,6 +171,11 @@ const clientBalanceStatus = (cashAvailable: number, debt: number): Client['statu
   if (cashAvailable > 0) return 'active'
   return 'paid'
 }
+const debtStatus = (remaining: number, paid: number): AccountingDebt['status'] => {
+  if (remaining <= 0) return 'paid'
+  if (paid > 0) return 'partial'
+  return 'open'
+}
 
 const moduleRu: Record<string, string> = {
   Dashboard: 'Дашборд',
@@ -192,6 +226,9 @@ const tableNames = [
   'barter_assets',
   'finance_transactions',
   'payment_receipts',
+  'accounting_debts',
+  'debt_repayments',
+  'raw_material_receipts',
   'daily_reports',
   'invoices',
   'lab_reports',
@@ -208,6 +245,9 @@ const tableLabel: Partial<Record<MutableTable, string>> = {
   barter_assets: 'бартерный актив',
   finance_transactions: 'оплату/транзакцию',
   payment_receipts: 'платежный документ',
+  accounting_debts: 'долг',
+  debt_repayments: 'погашение долга',
+  raw_material_receipts: 'приход сырья',
   daily_reports: 'ежедневный отчет',
   invoices: 'счет',
   lab_reports: 'лабораторный отчет',
@@ -307,6 +347,120 @@ export function useCrmStore(enabled = true) {
         setData((current) => ({ ...current, finance_transactions: [row, ...current.finance_transactions] }))
         await saveRow('finance_transactions', row)
         notify('Транзакция сохранена')
+      },
+      addDebt: async (debt: Omit<AccountingDebt, 'id' | 'paid_amount' | 'remaining_amount' | 'status' | 'created_at' | 'updated_at'>) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        const row: AccountingDebt = {
+          ...debt,
+          id: id(),
+          paid_amount: 0,
+          remaining_amount: Math.max(debt.amount, 0),
+          status: 'open',
+          created_at: now(),
+          updated_at: now(),
+        }
+        setData((current) => ({ ...current, accounting_debts: [row, ...current.accounting_debts] }))
+        await saveRow('accounting_debts', row)
+        notify('Долг создан')
+      },
+      repayDebt: async (debtId: string, amount: number, date = new Date().toISOString().slice(0, 10), notes = '') => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        const debt = data.accounting_debts.find((item) => item.id === debtId && !item.annulled)
+        if (!debt || amount <= 0) return
+        const paidNow = Math.min(amount, debt.remaining_amount)
+        const nextPaid = debt.paid_amount + paidNow
+        const nextRemaining = Math.max(debt.amount - nextPaid, 0)
+        const finance: FinanceTransaction = {
+          id: id(),
+          client_id: debt.client_id,
+          date,
+          category: 'Погашение долга',
+          type: debt.type === 'receivable' ? 'income' : 'expense',
+          description: `${debt.type === 'receivable' ? 'Они должны' : 'Мы должны'}: ${debt.counterparty}`,
+          amount: paidNow,
+          payment_method: 'банк',
+          notes,
+          linked_module: 'Долги',
+          linked_record_id: debt.id,
+          status: 'paid',
+        }
+        const repayment: DebtRepayment = {
+          id: id(),
+          debt_id: debt.id,
+          date,
+          amount: paidNow,
+          direction: debt.type,
+          notes,
+          finance_transaction_id: finance.id,
+          created_at: now(),
+        }
+        const updatedDebt: AccountingDebt = {
+          ...debt,
+          paid_amount: nextPaid,
+          remaining_amount: nextRemaining,
+          status: debtStatus(nextRemaining, nextPaid),
+          updated_at: now(),
+        }
+        setData((current) => ({
+          ...current,
+          accounting_debts: current.accounting_debts.map((item) => (item.id === debt.id ? updatedDebt : item)),
+          debt_repayments: [repayment, ...current.debt_repayments],
+          finance_transactions: [finance, ...current.finance_transactions],
+        }))
+        await saveRow('accounting_debts', updatedDebt)
+        await saveRow('debt_repayments', repayment)
+        await saveRow('finance_transactions', finance)
+        notify(nextRemaining === 0 ? 'Долг полностью погашен' : 'Погашение долга сохранено')
+      },
+      addRawMaterialReceipt: async (receipt: Omit<RawMaterialReceipt, 'id' | 'amount' | 'debt_id' | 'created_at' | 'updated_at'>) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        const amount = Math.max(receipt.quantity, 0) * Math.max(receipt.price, 0)
+        const row: RawMaterialReceipt = { ...receipt, id: id(), amount, created_at: now(), updated_at: now() }
+        let debt: AccountingDebt | undefined
+        let finance: FinanceTransaction | undefined
+        if (receipt.status === 'debt') {
+          debt = {
+            id: id(),
+            type: 'payable',
+            counterparty: receipt.supplier,
+            source_module: 'Приход сырья',
+            source_record_id: row.id,
+            date: receipt.date,
+            amount,
+            paid_amount: 0,
+            remaining_amount: amount,
+            status: 'open',
+            notes: `${receipt.material} · ${receipt.quantity} ${receipt.unit}`,
+            created_at: now(),
+            updated_at: now(),
+          }
+          row.debt_id = debt.id
+        } else {
+          finance = {
+            id: id(),
+            date: receipt.date,
+            category: 'Сырьё',
+            type: 'expense',
+            description: `${receipt.material}: ${receipt.supplier}`,
+            amount,
+            payment_method: 'банк',
+            supplier_person: receipt.supplier,
+            notes: receipt.notes,
+            linked_module: 'Приход сырья',
+            linked_record_id: row.id,
+            status: 'paid',
+          }
+        }
+        setData((current) => ({
+          ...current,
+          raw_material_receipts: [row, ...current.raw_material_receipts],
+          accounting_debts: debt ? [debt, ...current.accounting_debts] : current.accounting_debts,
+          finance_transactions: finance ? [finance, ...current.finance_transactions] : current.finance_transactions,
+        }))
+        await saveRow('raw_material_receipts', row)
+        if (debt) await saveRow('accounting_debts', debt)
+        if (finance) await saveRow('finance_transactions', finance)
+        notify(receipt.status === 'debt' ? 'Приход сырья сохранен и создан долг поставщику' : 'Приход сырья сохранен')
       },
       updateFinance: async (transaction: FinanceTransaction) => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
@@ -451,16 +605,36 @@ export function useCrmStore(enabled = true) {
           comment: delivery.comment ?? '',
           status: 'unpaid',
         }
-        const financeRow: FinanceTransaction = {
+        const financeRow: FinanceTransaction | undefined = cashCovered > 0 ? {
           id: id(),
           client_id: client.id,
           date: delivery.date,
-          category: 'Начисление за бетон',
+          category: 'Продажа бетона',
           type: 'income',
           description: `${client.name}: ${delivery.object_name}, ${delivery.volume_m3} м³ ${delivery.concrete_grade}`,
-          amount: totalAmount,
-          status: 'unpaid',
-        }
+          amount: cashCovered,
+          payment_method: 'предоплата',
+          linked_module: 'Продажи бетона',
+          linked_record_id: row.id,
+          status: 'paid',
+        } : undefined
+        const totalDebt = cashDebt + barterDebt
+        const debtRow: AccountingDebt | undefined = totalDebt > 0 ? {
+          id: id(),
+          type: 'receivable',
+          counterparty: client.name,
+          client_id: client.id,
+          source_module: 'Продажи бетона',
+          source_record_id: row.id,
+          date: delivery.date,
+          amount: totalDebt,
+          paid_amount: 0,
+          remaining_amount: totalDebt,
+          status: 'open',
+          notes: `Накладная: ${delivery.object_name}. Наличный долг ${moneyText(cashDebt)}, бартерный долг ${moneyText(barterDebt)}`,
+          created_at: now(),
+          updated_at: now(),
+        } : undefined
         const nextCashAvailable = Math.max((client.cash_available ?? 0) - cashCovered, 0)
         const nextDebt = Math.max(Math.abs(Math.min(client.balance, 0)) + cashDebt + barterDebt, 0)
         const updatedClient: Client = {
@@ -476,7 +650,8 @@ export function useCrmStore(enabled = true) {
           ...current,
           client_reports: [row, ...current.client_reports],
           barter_assets: current.barter_assets.map((asset) => updatedAssets.find((updated) => updated.id === asset.id) ?? asset),
-          finance_transactions: [financeRow, ...current.finance_transactions],
+          finance_transactions: financeRow ? [financeRow, ...current.finance_transactions] : current.finance_transactions,
+          accounting_debts: debtRow ? [debtRow, ...current.accounting_debts] : current.accounting_debts,
           clients: current.clients.map((item) =>
             item.id === client.id
               ? updatedClient
@@ -508,7 +683,8 @@ export function useCrmStore(enabled = true) {
         await saveRow('client_reports', row)
         await Promise.all(updatedAssets.map((asset) => saveRow('barter_assets', asset)))
         await saveRow('clients', updatedClient)
-        await saveRow('finance_transactions', financeRow)
+        if (financeRow) await saveRow('finance_transactions', financeRow)
+        if (debtRow) await saveRow('accounting_debts', debtRow)
         notify(cashDebt > 0 || actualCoveredBarter < barterAmount ? 'Накладная сохранена, есть долг по наличным или бартеру' : 'Накладная бетона сохранена')
       },
       addPayment: async (clientId: string, amount: number, date = new Date().toISOString().slice(0, 10), description = 'Оплата клиента', paymentType = 'наличные', notes = '') => {
@@ -703,6 +879,9 @@ export function useCrmStore(enabled = true) {
           barter_assets: [],
           finance_transactions: [],
           payment_receipts: [],
+          accounting_debts: [],
+          debt_repayments: [],
+          raw_material_receipts: [],
           daily_reports: [],
           invoices: [],
           lab_reports: [],
@@ -714,7 +893,7 @@ export function useCrmStore(enabled = true) {
         return true
       },
     }),
-    [archiveRow, canManage, data.barter_assets, data.clients, data.invoices, data.payment_receipts.length, data.profile.full_name, notify, saveRow],
+    [archiveRow, canManage, data.accounting_debts, data.barter_assets, data.clients, data.invoices, data.payment_receipts.length, data.profile.full_name, notify, saveRow],
   )
 
   return { data, setData, loading, toast, notify, canManage, api }

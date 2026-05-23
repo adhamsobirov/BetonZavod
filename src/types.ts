@@ -5,6 +5,8 @@ export type BarterAssetType = 'apartment' | 'car' | 'land' | 'equipment' | 'othe
 export type BarterAssetStatus = 'active' | 'partial' | 'written_off' | 'owned'
 export type BarterDealStatus = 'pending' | 'accepted' | 'sold' | 'active' | 'completed' | 'cancelled'
 export type CementMovementType = 'incoming' | 'usage'
+export type AccountingDebtType = 'receivable' | 'payable'
+export type AccountingDebtStatus = 'open' | 'partial' | 'paid' | 'overdue' | 'cancelled'
 
 export type Profile = {
   id: string
@@ -150,6 +152,53 @@ export type PaymentReceipt = {
   created_at: string
 }
 
+export type AccountingDebt = {
+  id: string
+  type: AccountingDebtType
+  counterparty: string
+  client_id?: string
+  source_module?: string
+  source_record_id?: string
+  date: string
+  due_date?: string
+  amount: number
+  paid_amount: number
+  remaining_amount: number
+  status: AccountingDebtStatus
+  notes?: string
+  created_at: string
+  updated_at?: string
+  annulled?: boolean
+}
+
+export type DebtRepayment = {
+  id: string
+  debt_id: string
+  date: string
+  amount: number
+  direction: AccountingDebtType
+  notes?: string
+  finance_transaction_id?: string
+  created_at: string
+}
+
+export type RawMaterialReceipt = {
+  id: string
+  date: string
+  supplier: string
+  material: string
+  quantity: number
+  unit: string
+  price: number
+  amount: number
+  status: 'paid' | 'debt'
+  notes?: string
+  debt_id?: string
+  created_at: string
+  updated_at?: string
+  annulled?: boolean
+}
+
 export type DailyReportItem = {
   id: string
   client_name: string
@@ -252,6 +301,9 @@ export type AppData = {
   barter_assets: BarterAsset[]
   finance_transactions: FinanceTransaction[]
   payment_receipts: PaymentReceipt[]
+  accounting_debts: AccountingDebt[]
+  debt_repayments: DebtRepayment[]
+  raw_material_receipts: RawMaterialReceipt[]
   daily_reports: DailyReport[]
   invoices: Invoice[]
   lab_reports: LabReport[]

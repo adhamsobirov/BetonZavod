@@ -140,6 +140,9 @@ export const seedData: AppData = {
     { id: 'l2', client_id: 'c1', delivery_id: 'r2', date: '2026-05-17', sample_date: '2026-05-15', test_date: '2026-05-17', concrete_grade: 'M400', object_name: 'ТЦ Галактика', slump: 'П3', strength_mpa: 41.2, temperature: 23, cement_amount: 360, sand_amount: 610, gravel_amount: 1190, water_amount: 170, notes: 'Ожидает финального протокола', status: 'pending' },
   ],
   payment_receipts: [],
+  accounting_debts: [],
+  debt_repayments: [],
+  raw_material_receipts: [],
   excavation_reports: [
     {
       id: 'e1',

@@ -49,17 +49,22 @@ import { aggregateExcavation, dailyTotals, excavationTotals, money, numberRu } f
 import { exportExcel, exportPdf, exportReportPdf, printReport, type ExportRow, type ReportSection } from './lib/export'
 import { useCrmStore } from './lib/store'
 import { hasSupabaseEnv, supabase } from './lib/supabase'
-import type { BarterAssetType, CementMovement, Client, DailyReport, DailyReportItem, ExcavationReport, FinanceTransaction, Invoice, LabReport, Profile, Status } from './types'
+import type { AccountingDebt, BarterAssetType, CementMovement, Client, DailyReport, DailyReportItem, ExcavationReport, FinanceTransaction, Invoice, LabReport, Profile, RawMaterialReceipt, Status } from './types'
 import './App.css'
 
 const navItems = [
   { label: 'Дашборд', to: '/', icon: LayoutDashboard },
   { label: 'Клиенты', to: '/clients', icon: Users },
   { label: 'Отчёты', to: '/reports', icon: FileText },
+  { label: 'Продажи бетона', to: '/sales', icon: Building2 },
   { label: 'Ежедневный отчёт', to: '/daily', icon: Calendar },
   { label: 'Финансы', to: '/finance', icon: CreditCard },
   { label: 'Приходы', to: '/income', icon: WalletCards },
   { label: 'Расходы', to: '/expenses', icon: ReceiptText },
+  { label: 'Приход сырья', to: '/raw-materials', icon: Package },
+  { label: 'Зарплата', to: '/salary', icon: UserCircle },
+  { label: 'Бартер', to: '/barter', icon: Home },
+  { label: 'Долги', to: '/debts', icon: FileBarChart },
   { label: 'Цемент', to: '/cement', icon: Package },
   { label: 'Счета', to: '/invoices', icon: ReceiptText },
   { label: 'Лаборатория', to: '/lab', icon: FlaskConical },
@@ -155,10 +160,15 @@ function App() {
               <Route path="/clients" element={<Clients store={store} />} />
               <Route path="/clients/:id" element={<ClientDetail store={store} />} />
               <Route path="/reports" element={<Reports store={store} />} />
+              <Route path="/sales" element={<ConcreteSales store={store} onDelivery={() => setDeliveryOpen(true)} />} />
               <Route path="/daily" element={<Daily store={store} />} />
               <Route path="/finance" element={<Finance store={store} />} />
               <Route path="/income" element={<FinanceOperationPage store={store} mode="income" />} />
               <Route path="/expenses" element={<FinanceOperationPage store={store} mode="expense" />} />
+              <Route path="/raw-materials" element={<RawMaterials store={store} />} />
+              <Route path="/salary" element={<SalaryPage store={store} />} />
+              <Route path="/barter" element={<BarterPage store={store} />} />
+              <Route path="/debts" element={<DebtsPage store={store} />} />
               <Route path="/cement" element={<Cement store={store} />} />
               <Route path="/invoices" element={<Invoices store={store} />} />
               <Route path="/lab" element={<Lab store={store} />} />
@@ -378,7 +388,7 @@ function Topbar({ store, onDelivery }: { store: Store; onDelivery: () => void })
   const [query, setQuery] = useState('')
   const income = store.data.finance_transactions.filter((item) => item.type === 'income' && !item.annulled).reduce((sum, item) => sum + item.amount, 0)
   const expenses = store.data.finance_transactions.filter((item) => item.type === 'expense' && !item.annulled).reduce((sum, item) => sum + item.amount, 0)
-  const debt = store.data.clients.reduce((sum, item) => sum + Math.abs(Math.min(item.balance, 0)), 0)
+  const debt = store.data.accounting_debts.filter((item) => !item.annulled && item.status !== 'paid').reduce((sum, item) => sum + item.remaining_amount, 0)
   const concreteM3 = store.data.client_reports.filter((item) => !item.annulled).reduce((sum, item) => sum + item.volume_m3, 0)
   const sections: ReportSection[] = [
     {
@@ -432,6 +442,18 @@ function Topbar({ store, onDelivery }: { store: Store; onDelivery: () => void })
           title: row.type === 'incoming' ? 'Приход цемента' : 'Расход цемента',
           subtitle: `${row.date} · ${numberRu(row.tons, 2)} т · ${money(row.total_cost)}`,
           to: '/cement',
+        })),
+        ...store.data.raw_material_receipts.filter((row) => !row.annulled && [row.date, row.supplier, row.material, row.amount, row.status].some(matches)).map((row) => ({
+          module: 'Приход сырья',
+          title: row.material,
+          subtitle: `${row.supplier} · ${money(row.amount)}`,
+          to: '/raw-materials',
+        })),
+        ...store.data.accounting_debts.filter((row) => !row.annulled && [row.date, row.counterparty, row.amount, row.remaining_amount, row.status].some(matches)).map((row) => ({
+          module: 'Долги',
+          title: row.type === 'receivable' ? 'Они должны' : 'Мы должны',
+          subtitle: `${row.counterparty} · остаток ${money(row.remaining_amount)}`,
+          to: '/debts',
         })),
         ...store.data.excavation_reports.filter((row) => !row.annulled && !row.archived && [row.date, row.object_name, row.client_name, row.location, row.status].some(matches)).map((row) => ({
           module: 'Котлован',
@@ -584,6 +606,57 @@ function SmartCalendar({ range, onChange }: { range: DateRange; onChange: (range
   )
 }
 
+function FilterPanel({
+  range,
+  onRange,
+  search,
+  onSearch,
+  status,
+  onStatus,
+  category,
+  onCategory,
+  minAmount,
+  onMinAmount,
+  maxAmount,
+  onMaxAmount,
+  statusOptions = [],
+  categoryOptions = [],
+}: {
+  range: DateRange
+  onRange: (range: DateRange) => void
+  search: string
+  onSearch: (value: string) => void
+  status?: string
+  onStatus?: (value: string) => void
+  category?: string
+  onCategory?: (value: string) => void
+  minAmount?: string
+  onMinAmount?: (value: string) => void
+  maxAmount?: string
+  onMaxAmount?: (value: string) => void
+  statusOptions?: { value: string; label: string }[]
+  categoryOptions?: { value: string; label: string }[]
+}) {
+  return (
+    <div className="toolbar filter-panel">
+      <SmartCalendar range={range} onChange={onRange} />
+      <label className="search small"><Search size={18} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Поиск..." /></label>
+      {onCategory && <select className="secondary select-action" value={category ?? 'all'} onChange={(event) => onCategory(event.target.value)}><option value="all">Все категории</option>{categoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>}
+      {onStatus && <select className="secondary select-action" value={status ?? 'all'} onChange={(event) => onStatus(event.target.value)}><option value="all">Все статусы</option>{statusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>}
+      {onMinAmount && <Field label="Сумма от" value={minAmount ?? ''} onChange={onMinAmount} type="number" min={0} />}
+      {onMaxAmount && <Field label="Сумма до" value={maxAmount ?? ''} onChange={onMaxAmount} type="number" min={0} />}
+    </div>
+  )
+}
+
+const amountInRange = (amount: number, min = '', max = '') => {
+  const from = min === '' ? 0 : Number(min)
+  const to = max === '' ? Number.POSITIVE_INFINITY : Number(max)
+  return amount >= from && amount <= to
+}
+
+const textMatches = (text: string, query: string) => text.toLowerCase().includes(query.trim().toLowerCase())
+
 function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <section className={`card ${className}`}>{children}</section>
 }
@@ -643,6 +716,8 @@ function Dashboard({ store, onDelivery }: { store: Store; onDelivery: () => void
             {store.canManage && <button className="secondary" onClick={onDelivery}><Plus size={18} /> Дать бетон</button>}
             {store.canManage && <button className="secondary" onClick={() => store.notify('Откройте карточку клиента, чтобы добавить оплату')}><CreditCard size={18} /> Оплата</button>}
             {store.canManage && <Link className="secondary" to="/invoices"><ReceiptText size={18} /> Счёт</Link>}
+            <Link className="secondary" to="/raw-materials"><Package size={18} /> Приход сырья</Link>
+            <Link className="secondary" to="/debts"><FileBarChart size={18} /> Долги</Link>
             <Link className="secondary" to="/excavation"><Home size={18} /> Котлован</Link>
           </div>
         </Card>
@@ -1195,6 +1270,144 @@ function Reports({ store }: { store: Store }) {
   )
 }
 
+function ConcreteSales({ store, onDelivery }: { store: Store; onDelivery: () => void }) {
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState('all')
+  const [minAmount, setMinAmount] = useState('')
+  const [maxAmount, setMaxAmount] = useState('')
+  const rows = store.data.client_reports
+    .filter((row) => !row.annulled && inDateRange(row.date, range))
+    .filter((row) => status === 'all' || row.status === status)
+    .filter((row) => amountInRange(row.amount, minAmount, maxAmount))
+    .filter((row) => {
+      const client = store.data.clients.find((item) => item.id === row.client_id)
+      return textMatches(`${client?.name ?? ''} ${row.object_name} ${row.concrete_grade} ${row.amount}`, search)
+    })
+  const totals = rows.reduce((acc, row) => ({
+    amount: acc.amount + row.amount,
+    cash: acc.cash + (row.cash_amount ?? row.amount - row.barter_amount),
+    paid: acc.paid + row.paid_amount,
+    barter: acc.barter + row.barter_amount,
+    debt: acc.debt + Math.max((row.cash_amount ?? 0) - row.paid_amount, 0),
+    volume: acc.volume + row.volume_m3,
+  }), { amount: 0, cash: 0, paid: 0, barter: 0, debt: 0, volume: 0 })
+  const exportRows = rows.map((row) => ({ Дата: row.date, Клиент: store.data.clients.find((client) => client.id === row.client_id)?.name ?? '', Объект: row.object_name, Марка: row.concrete_grade, Кубы: row.volume_m3, Сумма: row.amount, Наличные: row.cash_amount ?? 0, Бартер: row.barter_amount, Оплачено: row.paid_amount }))
+
+  return (
+    <>
+      <PageHeader title="Продажи бетона" subtitle="Накладные, оплатные части, бартер и долги по продажам." action={<div className="toolbar compact"><ExportButtons title="Продажи бетона" rows={exportRows} filename="concrete-sales" />{store.canManage && <button className="primary" onClick={onDelivery}><Plus size={18} /> Дать бетон</button>}</div>} />
+      <FilterPanel range={range} onRange={setRange} search={search} onSearch={setSearch} status={status} onStatus={setStatus} minAmount={minAmount} onMinAmount={setMinAmount} maxAmount={maxAmount} onMaxAmount={setMaxAmount} statusOptions={[{ value: 'paid', label: 'Оплачен' }, { value: 'unpaid', label: 'Не оплачен' }, { value: 'debt', label: 'Долг' }]} />
+      <div className="kpi-grid four">
+        <Kpi title="Продажи всего" value={money(totals.amount)} />
+        <Kpi title="Реальный приход" value={money(totals.paid)} tone="green" />
+        <Kpi title="Бартер списан" value={money(totals.barter)} tone="amber" />
+        <Kpi title="Долг продаж" value={money(totals.debt)} tone="red" />
+      </div>
+      <Card>
+        <table className="crm-table">
+          <thead><tr><th>Дата</th><th>Клиент</th><th>Объект</th><th>Марка</th><th>м³</th><th>Сумма</th><th>Наличные</th><th>Бартер</th><th>Оплачено</th><th>Действия</th></tr></thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td>{new Date(row.date).toLocaleDateString('ru-RU')}</td>
+                <td><Link to={`/clients/${row.client_id}`}>{store.data.clients.find((client) => client.id === row.client_id)?.name ?? 'Клиент'}</Link></td>
+                <td>{row.object_name}</td>
+                <td>{row.concrete_grade}</td>
+                <td>{numberRu(row.volume_m3, 1)}</td>
+                <td>{money(row.amount)}</td>
+                <td>{money(row.cash_amount ?? 0)}</td>
+                <td>{money(row.barter_amount)}</td>
+                <td>{money(row.paid_amount)}</td>
+                <td>{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('client_reports', row.id, row.object_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </>
+  )
+}
+
+function RawMaterials({ store }: { store: Store }) {
+  const [open, setOpen] = useState(false)
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState('all')
+  const rows = store.data.raw_material_receipts
+    .filter((row) => !row.annulled && inDateRange(row.date, range))
+    .filter((row) => status === 'all' || row.status === status)
+    .filter((row) => textMatches(`${row.supplier} ${row.material} ${row.amount} ${row.notes ?? ''}`, search))
+  const totals = rows.reduce((sum, row) => sum + row.amount, 0)
+  return (
+    <>
+      <PageHeader title="Приход сырья" subtitle="Прием сырья, оплаченные поступления и долги поставщикам." action={store.canManage ? <button className="primary" onClick={() => setOpen(true)}><Plus size={18} /> Добавить приход</button> : undefined} />
+      <FilterPanel range={range} onRange={setRange} search={search} onSearch={setSearch} status={status} onStatus={setStatus} statusOptions={[{ value: 'paid', label: 'Оплачено' }, { value: 'debt', label: 'Долг' }]} />
+      <div className="kpi-grid four"><Kpi title="Приход сырья" value={money(totals)} /><Kpi title="Записей" value={numberRu(rows.length)} /><Kpi title="В долг" value={money(rows.filter((row) => row.status === 'debt').reduce((sum, row) => sum + row.amount, 0))} tone="red" /><Kpi title="Оплачено" value={money(rows.filter((row) => row.status === 'paid').reduce((sum, row) => sum + row.amount, 0))} tone="green" /></div>
+      <Card>
+        <table className="crm-table">
+          <thead><tr><th>Дата</th><th>Поставщик</th><th>Сырьё</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th>Статус</th><th>Действия</th></tr></thead>
+          <tbody>{rows.map((row) => <tr key={row.id}><td>{row.date}</td><td>{row.supplier}</td><td>{row.material}</td><td>{numberRu(row.quantity, 2)} {row.unit}</td><td>{money(row.price)}</td><td>{money(row.amount)}</td><td><span className={row.status === 'debt' ? 'tag tag-red' : 'tag tag-green'}>{row.status === 'debt' ? 'Долг' : 'Оплачено'}</span></td><td>{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('raw_material_receipts', row.id, row.material, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</td></tr>)}</tbody>
+        </table>
+      </Card>
+      {open && <RawMaterialModal store={store} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
+function SalaryPage({ store }: { store: Store }) {
+  const salaryRows = store.data.finance_transactions.filter((row) => !row.annulled && row.type === 'expense' && row.category.toLowerCase() === 'зарплата')
+  return <AccountingTransactionList store={store} title="Зарплата" subtitle="Начисления и выплаты сотрудникам." rows={salaryRows} category="Зарплата" />
+}
+
+function BarterPage({ store }: { store: Store }) {
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
+  const [search, setSearch] = useState('')
+  const rows = store.data.barter_assets.filter((asset) => inDateRange(asset.created_at, range)).filter((asset) => textMatches(`${asset.asset_name} ${asset.comment} ${asset.market_value}`, search))
+  return (
+    <>
+      <PageHeader title="Бартер с застройщиками" subtitle="Бартерные договоры, лимиты, использовано и остаток." />
+      <FilterPanel range={range} onRange={setRange} search={search} onSearch={setSearch} />
+      <div className="operation-cards">
+        {rows.map((asset) => {
+          const client = store.data.clients.find((item) => item.id === asset.client_id)
+          const progress = asset.market_value ? Math.min(100, (asset.used_amount / asset.market_value) * 100) : 0
+          return <Card key={asset.id}><div className="card-title"><div><span className={asset.remaining_amount <= 0 ? 'tag tag-green' : 'tag tag-amber'}>{asset.remaining_amount <= 0 ? '100% закрыт' : 'Активный'}</span><h2>{asset.asset_name}</h2><p>{client?.name ?? 'Клиент'} · {barterAssetTypeLabels[asset.type]}</p></div><strong>{money(asset.remaining_amount)}</strong></div><div className="mobile-progress"><div><i style={{ width: `${progress}%` }} /></div><span>Использовано {money(asset.used_amount)} из {money(asset.market_value)}</span></div></Card>
+        })}
+      </div>
+    </>
+  )
+}
+
+function DebtsPage({ store }: { store: Store }) {
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState('all')
+  const [type, setType] = useState('all')
+  const [repayDebt, setRepayDebt] = useState<AccountingDebt | null>(null)
+  const rows = store.data.accounting_debts
+    .filter((row) => !row.annulled && inDateRange(row.date, range))
+    .filter((row) => status === 'all' || row.status === status)
+    .filter((row) => type === 'all' || row.type === type)
+    .filter((row) => textMatches(`${row.counterparty} ${row.amount} ${row.remaining_amount} ${row.notes ?? ''}`, search))
+  const receivable = rows.filter((row) => row.type === 'receivable').reduce((sum, row) => sum + row.remaining_amount, 0)
+  const payable = rows.filter((row) => row.type === 'payable').reduce((sum, row) => sum + row.remaining_amount, 0)
+  return (
+    <>
+      <PageHeader title="Долги" subtitle="Мы должны, они должны и история погашений." />
+      <FilterPanel range={range} onRange={setRange} search={search} onSearch={setSearch} status={status} onStatus={setStatus} category={type} onCategory={setType} statusOptions={[{ value: 'open', label: 'Открыт' }, { value: 'partial', label: 'Частично' }, { value: 'paid', label: 'Погашен' }, { value: 'overdue', label: 'Просрочен' }]} categoryOptions={[{ value: 'receivable', label: 'Они должны' }, { value: 'payable', label: 'Мы должны' }]} />
+      <div className="kpi-grid four"><Kpi title="Они должны" value={money(receivable)} tone="green" /><Kpi title="Мы должны" value={money(payable)} tone="red" /><Kpi title="Записей" value={numberRu(rows.length)} /><Kpi title="Погашено" value={money(store.data.debt_repayments.reduce((sum, row) => sum + row.amount, 0))} tone="blue" /></div>
+      <Card>
+        <table className="crm-table">
+          <thead><tr><th>Дата</th><th>Тип</th><th>Контрагент</th><th>Сумма</th><th>Оплачено</th><th>Остаток</th><th>Статус</th><th>Действия</th></tr></thead>
+          <tbody>{rows.map((row) => <tr key={row.id}><td>{row.date}</td><td>{row.type === 'receivable' ? 'Они должны' : 'Мы должны'}</td><td>{row.counterparty}</td><td>{money(row.amount)}</td><td>{money(row.paid_amount)}</td><td>{money(row.remaining_amount)}</td><td><span className={row.status === 'paid' ? 'tag tag-green' : row.status === 'partial' ? 'tag tag-amber' : 'tag tag-red'}>{row.status === 'paid' ? 'Погашен' : row.status === 'partial' ? 'Частично' : 'Открыт'}</span></td><td><div className="row-actions">{store.canManage && row.remaining_amount > 0 && <button className="secondary" onClick={() => setRepayDebt(row)}>Погасить</button>}{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('accounting_debts', row.id, row.counterparty, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</div></td></tr>)}</tbody>
+        </table>
+      </Card>
+      {repayDebt && <DebtRepaymentModal debt={repayDebt} store={store} onClose={() => setRepayDebt(null)} />}
+    </>
+  )
+}
+
 function Finance({ store }: { store: Store }) {
   const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
   const [clientFilter, setClientFilter] = useState('all')
@@ -1344,12 +1557,12 @@ function FinanceOperationModal({ store, mode, transaction, onClose }: { store: S
     status: 'paid',
   })
   const categories = mode === 'income'
-    ? ['Оплата клиента', 'Бартер принят', 'Оплата за бетон', 'Прочий приход']
-    : ['топливо', 'зарплата', 'ремонт', 'запчасти', 'техника', 'цемент', 'аренда', 'прочее']
+    ? ['Оплата клиента', 'Погашение долга', 'Бартер принят', 'Оплата за бетон', 'Прочий приход']
+    : ['Зарплата', 'Запчасти', 'Сырьё', 'Оплата долга', 'Топливо', 'Прочее']
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (form.amount <= 0) return store.notify('Укажите сумму операции')
-    if (transaction) {
+    if (transaction?.id) {
       await store.api.updateFinance(form)
     } else if (mode === 'income' && form.category === 'Оплата клиента' && form.client_id) {
       await store.api.addPayment(form.client_id, form.amount, form.date, form.description || 'Оплата клиента', form.payment_method || 'наличные', form.notes || '')
@@ -1384,10 +1597,81 @@ function FinanceOperationModal({ store, mode, transaction, onClose }: { store: S
           <Field label="Поставщик / сотрудник" value={form.supplier_person ?? ''} onChange={(v) => setForm({ ...form, supplier_person: v })} />
         )}
         <SelectField label="Метод оплаты" value={form.payment_method ?? ''} onChange={(v) => setForm({ ...form, payment_method: v })} options={['наличные', 'банк', 'карта', 'бартер', 'другое'].map((value) => ({ value, label: value }))} />
+        {mode === 'expense' && form.category === 'Топливо' && <SelectField label="Вид топлива" value={form.notes ?? ''} onChange={(v) => setForm({ ...form, notes: v })} options={['Солярка', 'Бензин', 'Масло'].map((value) => ({ value, label: value }))} />}
         <Field label="Описание" value={form.description} onChange={(v) => setForm({ ...form, description: v })} />
         <Field label="Связанный модуль" value={form.linked_module ?? ''} onChange={(v) => setForm({ ...form, linked_module: v })} />
         <Field label="ID связанной записи" value={form.linked_record_id ?? ''} onChange={(v) => setForm({ ...form, linked_record_id: v })} />
         <Field label="Примечание" value={form.notes ?? ''} onChange={(v) => setForm({ ...form, notes: v })} />
+      </div>
+    </Modal>
+  )
+}
+
+function AccountingTransactionList({ store, title, subtitle, rows, category }: { store: Store; title: string; subtitle: string; rows: FinanceTransaction[]; category: string }) {
+  const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
+  const [search, setSearch] = useState('')
+  const [open, setOpen] = useState(false)
+  const visible = rows.filter((row) => inDateRange(row.date, range)).filter((row) => textMatches(`${row.description} ${row.supplier_person ?? ''} ${row.amount}`, search))
+  return (
+    <>
+      <PageHeader title={title} subtitle={subtitle} action={store.canManage ? <button className="primary" onClick={() => setOpen(true)}><Plus size={18} /> Добавить</button> : undefined} />
+      <FilterPanel range={range} onRange={setRange} search={search} onSearch={setSearch} />
+      <div className="kpi-grid four"><Kpi title="Итого" value={money(visible.reduce((sum, row) => sum + row.amount, 0))} tone="red" /><Kpi title="Операций" value={numberRu(visible.length)} /><Kpi title="Категория" value={category} /><Kpi title="Период" value={`${range.from} - ${range.to}`} tone="amber" /></div>
+      <div className="operation-cards">{visible.map((row) => <Card key={row.id}><div className="card-title"><div><span className="tag tag-red">{row.category}</span><h2>{row.description}</h2><p>{row.date} · {row.supplier_person ?? row.payment_method ?? '-'}</p></div><strong className="red-text">{money(row.amount)}</strong></div>{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('finance_transactions', row.id, row.description, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</Card>)}</div>
+      {open && <FinanceOperationModal store={store} mode="expense" transaction={{ id: '', date: isoDate(), category, type: 'expense', description: '', amount: 0, payment_method: 'наличные', supplier_person: '', notes: '', status: 'paid' }} onClose={() => setOpen(false)} />}
+    </>
+  )
+}
+
+function RawMaterialModal({ store, onClose }: { store: Store; onClose: () => void }) {
+  const [form, setForm] = useState<Omit<RawMaterialReceipt, 'id' | 'amount' | 'debt_id' | 'created_at' | 'updated_at'>>({
+    date: isoDate(),
+    supplier: '',
+    material: 'Цемент',
+    quantity: 0,
+    unit: 'т',
+    price: 0,
+    status: 'paid',
+    notes: '',
+  })
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!form.supplier || !form.material || form.quantity <= 0 || form.price <= 0) return store.notify('Заполните поставщика, сырье, количество и цену')
+    await store.api.addRawMaterialReceipt(form)
+    onClose()
+  }
+  return (
+    <Modal title="Приход сырья" subtitle="Если статус Долг, будет создан долг в разделе Мы должны." onClose={onClose} onSubmit={submit}>
+      <div className="form-grid three-cols">
+        <Field label="Дата" value={form.date} onChange={(v) => setForm({ ...form, date: v })} type="date" />
+        <Field label="Поставщик" value={form.supplier} onChange={(v) => setForm({ ...form, supplier: v })} />
+        <SelectField label="Сырьё" value={form.material} onChange={(v) => setForm({ ...form, material: v })} options={['Цемент', 'Песок', 'Щебень', 'Добавки', 'Другое'].map((value) => ({ value, label: value }))} />
+        <Field label="Количество" value={form.quantity} onChange={(v) => setForm({ ...form, quantity: Number(v) })} type="number" min={0} />
+        <Field label="Единица" value={form.unit} onChange={(v) => setForm({ ...form, unit: v })} />
+        <Field label="Цена" value={form.price} onChange={(v) => setForm({ ...form, price: Number(v) })} type="number" min={0} />
+        <SelectField label="Статус" value={form.status} onChange={(v) => setForm({ ...form, status: v as 'paid' | 'debt' })} options={[{ value: 'paid', label: 'Оплачено' }, { value: 'debt', label: 'Долг' }]} />
+        <Field label="Примечание" value={form.notes ?? ''} onChange={(v) => setForm({ ...form, notes: v })} />
+      </div>
+      <div className="calc-strip"><SummaryLine label="Сумма" value={money(form.quantity * form.price)} /></div>
+    </Modal>
+  )
+}
+
+function DebtRepaymentModal({ debt, store, onClose }: { debt: AccountingDebt; store: Store; onClose: () => void }) {
+  const [amount, setAmount] = useState(debt.remaining_amount)
+  const [date, setDate] = useState(isoDate())
+  const [notes, setNotes] = useState('')
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    await store.api.repayDebt(debt.id, amount, date, notes)
+    onClose()
+  }
+  return (
+    <Modal title="Погашение долга" subtitle={`${debt.counterparty} · остаток ${money(debt.remaining_amount)}`} onClose={onClose} onSubmit={submit}>
+      <div className="form-grid two-cols">
+        <Field label="Дата" value={date} onChange={setDate} type="date" />
+        <Field label="Сумма" value={amount} onChange={(v) => setAmount(Math.min(Number(v), debt.remaining_amount))} type="number" min={0} />
+        <Field label="Примечание" value={notes} onChange={setNotes} />
       </div>
     </Modal>
   )
