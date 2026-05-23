@@ -135,6 +135,21 @@ export type FinanceTransaction = {
   annulled?: boolean
 }
 
+export type PaymentReceipt = {
+  id: string
+  receipt_number: string
+  date: string
+  client_id: string
+  payment_type: string
+  amount: number
+  cash_amount: number
+  barter_amount: number
+  notes?: string
+  operator_name?: string
+  finance_transaction_id?: string
+  created_at: string
+}
+
 export type DailyReportItem = {
   id: string
   client_name: string
@@ -236,6 +251,7 @@ export type AppData = {
   client_reports: ClientReport[]
   barter_assets: BarterAsset[]
   finance_transactions: FinanceTransaction[]
+  payment_receipts: PaymentReceipt[]
   daily_reports: DailyReport[]
   invoices: Invoice[]
   lab_reports: LabReport[]

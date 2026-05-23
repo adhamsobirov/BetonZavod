@@ -415,6 +415,12 @@ function Topbar({ store, onDelivery }: { store: Store; onDelivery: () => void })
           subtitle: `${row.date} · ${row.description} · ${money(row.amount)}`,
           to: row.type === 'expense' ? '/expenses' : '/income',
         })),
+        ...store.data.payment_receipts.filter((row) => [row.receipt_number, row.date, row.payment_type, row.amount, row.notes, row.operator_name].some(matches)).map((row) => ({
+          module: 'Платежные документы',
+          title: row.receipt_number,
+          subtitle: `${new Date(row.date).toLocaleDateString('ru-RU')} · ${money(row.amount)}`,
+          to: `/clients/${row.client_id}`,
+        })),
         ...store.data.barter_assets.filter((asset) => [asset.asset_name, asset.type, asset.comment, asset.market_value, asset.remaining_amount, asset.asset_status].some(matches)).map((asset) => ({
           module: 'Бартер',
           title: asset.asset_name,
@@ -823,11 +829,15 @@ function ClientDetail({ store }: { store: Store }) {
   const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
   const client = store.data.clients.find((item) => item.id === id)
   if (!client) return <EmptyState title="Клиент не найден" />
-  const rows = store.data.client_reports.filter((report) => report.client_id === client.id && !report.annulled && inDateRange(report.date, range))
-  const payments = store.data.finance_transactions.filter((item) => item.client_id === client.id && item.category === 'Оплата' && !item.annulled && inDateRange(item.date, range))
-  const barterAssets = store.data.barter_assets.filter((asset) => asset.client_id === client.id && inDateRange(asset.created_at, range))
-  const ownedAssets = barterAssets.filter((asset) => asset.remaining_amount <= 0 || asset.status === 'written_off' || asset.status === 'owned')
-  const totals = rows.reduce(
+  const allRows = store.data.client_reports.filter((report) => report.client_id === client.id && !report.annulled)
+  const allPayments = store.data.finance_transactions.filter((item) => item.client_id === client.id && item.category === 'Оплата' && !item.annulled)
+  const allBarterAssets = store.data.barter_assets.filter((asset) => asset.client_id === client.id)
+  const receipts = store.data.payment_receipts.filter((receipt) => receipt.client_id === client.id && inDateRange(receipt.date, range))
+  const rows = allRows.filter((report) => inDateRange(report.date, range))
+  const payments = allPayments.filter((item) => inDateRange(item.date, range))
+  const barterAssets = allBarterAssets.filter((asset) => inDateRange(asset.created_at, range))
+  const ownedAssets = allBarterAssets.filter((asset) => asset.remaining_amount <= 0 || asset.status === 'written_off' || asset.status === 'owned')
+  const totals = allRows.reduce(
     (acc, row) => ({
       volume: acc.volume + row.volume_m3,
       amount: acc.amount + row.amount,
@@ -838,19 +848,24 @@ function ClientDetail({ store }: { store: Store }) {
     }),
     { volume: 0, amount: 0, paid: 0, barter: 0, cash: 0, usedBarterFromDeliveries: 0 },
   )
-  const cashPaid = payments.reduce((sum, item) => sum + item.amount, 0)
+  const cashPaid = allPayments.reduce((sum, item) => sum + item.amount, 0)
   const usedCash = Math.min(cashPaid, totals.cash)
   const remainingCash = Math.max(cashPaid - usedCash, 0)
   const currentCashBalance = Math.max(client.cash_available ?? remainingCash, 0)
   const cashDebt = Math.max(totals.cash - usedCash, 0)
-  const totalMarketValue = barterAssets.reduce((sum, asset) => sum + asset.market_value, 0)
-  const totalCostPrice = barterAssets.reduce((sum, asset) => sum + (asset.cost_price ?? 0), 0)
-  const usedBarter = barterAssets.reduce((sum, asset) => sum + asset.used_amount, 0)
-  const remainingBarter = barterAssets.reduce((sum, asset) => sum + asset.remaining_amount, 0)
+  const totalMarketValue = allBarterAssets.reduce((sum, asset) => sum + asset.market_value, 0)
+  const totalCostPrice = allBarterAssets.reduce((sum, asset) => sum + (asset.cost_price ?? 0), 0)
+  const usedBarter = allBarterAssets.reduce((sum, asset) => sum + asset.used_amount, 0)
+  const remainingBarter = allBarterAssets.reduce((sum, asset) => sum + asset.remaining_amount, 0)
   const barterProgress = totalMarketValue > 0 ? Math.min(100, (usedBarter / totalMarketValue) * 100) : 0
   const barterDebt = Math.max(totals.barter - usedBarter, 0)
   const barterProfit = totalMarketValue - totalCostPrice
   const debt = cashDebt + barterDebt
+  const totalUsed = totals.amount
+  const availableValue = currentCashBalance + remainingBarter
+  const totalPaidValue = cashPaid + totalMarketValue
+  const overallProgress = totalPaidValue > 0 ? Math.min(100, (totalUsed / totalPaidValue) * 100) : 0
+  const autoStatus = debt > 0 ? 'Долг' : availableValue > 0 ? 'Остаток' : 'Оплачено'
   const exportRows = rows.map((row) => ({
     Дата: row.date,
     Объект: row.object_name,
@@ -880,8 +895,9 @@ function ClientDetail({ store }: { store: Store }) {
       ],
     },
     { title: 'Поставки бетона', rows: exportRows },
-    { title: 'Оплаты', rows: payments.map((payment) => ({ Дата: payment.date, Описание: payment.description, Сумма: money(payment.amount) })) },
-    { title: 'Бартер', rows: barterAssets.map((asset) => ({ Тип: barterAssetTypeLabels[asset.type], Название: asset.asset_name, Стоимость: money(asset.market_value), Наличные: money(asset.cash_paid ?? 0), Бартер: money(asset.barter_value ?? asset.market_value), Итого: money(asset.total_paid_value ?? 0), Остаток: money(asset.remaining_debt ?? 0), Статус: barterDealStatusLabel[asset.asset_status ?? 'accepted'] })) },
+    { title: 'Оплаты', rows: allPayments.map((payment) => ({ Дата: payment.date, Описание: payment.description, Сумма: money(payment.amount) })) },
+    { title: 'Платежные документы', rows: receipts.map((receipt) => ({ Номер: receipt.receipt_number, Дата: receipt.date, Тип: receipt.payment_type, Сумма: money(receipt.amount), Оператор: receipt.operator_name ?? '' })) },
+    { title: 'Бартер', rows: allBarterAssets.map((asset) => ({ Тип: barterAssetTypeLabels[asset.type], Название: asset.asset_name, Стоимость: money(asset.market_value), Наличные: money(asset.cash_paid ?? 0), Бартер: money(asset.barter_value ?? asset.market_value), Итого: money(asset.total_paid_value ?? 0), Остаток: money(asset.remaining_debt ?? 0), Статус: barterDealStatusLabel[asset.asset_status ?? 'accepted'] })) },
     {
       title: 'Итог',
       items: [
@@ -943,6 +959,12 @@ function ClientDetail({ store }: { store: Store }) {
         <Kpi title="Общий долг" value={money(debt)} tone="red" />
         <Kpi title="Наши активы" value={numberRu(ownedAssets.length)} tone="green" />
       </div>
+      <div className="kpi-grid four">
+        <Kpi title="Всего оплачено" value={money(totalPaidValue)} tone="green" />
+        <Kpi title="Всего использовано" value={money(totalUsed)} tone="blue" />
+        <Kpi title="Остаток баланса" value={money(availableValue)} tone={availableValue > 0 ? 'green' : 'blue'} />
+        <Kpi title="Статус баланса" value={autoStatus} tone={debt > 0 ? 'red' : availableValue > 0 ? 'amber' : 'green'} />
+      </div>
       <Card className="balance-progress-card">
         <div className="card-title">
           <div>
@@ -950,6 +972,10 @@ function ClientDetail({ store }: { store: Store }) {
             <p className="muted-text">Сплит: наличные {client.cash_percent}% / бартер {client.barter_percent}%</p>
           </div>
           <strong>{numberRu(barterProgress, 1)}% бартера использовано</strong>
+        </div>
+        <div className="mobile-progress">
+          <div><i style={{ width: `${overallProgress}%` }} /></div>
+          <span>Общий прогресс: использовано {money(totalUsed)} из {money(totalPaidValue)}</span>
         </div>
         <div className="mobile-progress">
           <div><i style={{ width: `${barterProgress}%` }} /></div>
@@ -1022,6 +1048,18 @@ function ClientDetail({ store }: { store: Store }) {
             if (value > 0) void store.api.addPayment(client.id, value)
           }}>Добавить оплату</button>}
         </Card>
+        <Card>
+          <h2>Платежные документы</h2>
+          {receipts.length ? receipts.map((receipt) => (
+            <div className="asset-row" key={receipt.id}>
+              <FileText />
+              <span>{receipt.receipt_number}<small>{new Date(receipt.date).toLocaleString('ru-RU')} · {receipt.payment_type} · {receipt.operator_name}</small></span>
+              <strong>{money(receipt.amount)}</strong>
+            </div>
+          )) : <p>Платежные документы за выбранный период пока не созданы.</p>}
+        </Card>
+      </div>
+      <div className="grid two">
         <Card>
           <div className="card-title">
             <h2>Бартерные активы</h2>
@@ -1314,7 +1352,7 @@ function FinanceOperationModal({ store, mode, transaction, onClose }: { store: S
     if (transaction) {
       await store.api.updateFinance(form)
     } else if (mode === 'income' && form.category === 'Оплата клиента' && form.client_id) {
-      await store.api.addPayment(form.client_id, form.amount, form.date, form.description || 'Оплата клиента')
+      await store.api.addPayment(form.client_id, form.amount, form.date, form.description || 'Оплата клиента', form.payment_method || 'наличные', form.notes || '')
     } else {
       await store.api.addFinance({
         client_id: form.client_id,
@@ -1440,6 +1478,7 @@ function Daily({ store }: { store: Store }) {
   const day = report.date
   const deliveries = store.data.client_reports.filter((item) => item.date === day && !item.annulled)
   const payments = store.data.finance_transactions.filter((item) => item.date === day && item.category === 'Оплата' && !item.annulled)
+  const paymentReceipts = store.data.payment_receipts.filter((item) => item.date.slice(0, 10) === day)
   const financeIncome = store.data.finance_transactions.filter((item) => item.date === day && item.type === 'income' && item.category !== 'Оплата' && !item.annulled)
   const financeExpenses = store.data.finance_transactions.filter((item) => item.date === day && item.type === 'expense' && !item.annulled)
   const barterActivity = store.data.barter_assets.filter((item) => item.created_at?.slice(0, 10) === day)
@@ -1453,7 +1492,9 @@ function Daily({ store }: { store: Store }) {
   const integratedExpense = totals.expenses + financeExpenses.reduce((sum, item) => sum + item.amount, 0) + cementDay.reduce((sum, item) => sum + item.total_cost, 0) + excavationDayTotals.totalExpenses
   const integratedRows = [
     ...deliveries.map((item) => ({ Раздел: 'Бетон', Описание: `${item.object_name} · ${item.concrete_grade}`, Приход: item.amount, Расход: 0 })),
+    ...deliveries.map((item) => ({ Раздел: 'Баланс', Описание: `Списание: наличные ${money(item.paid_amount)} · бартер ${money(item.barter_amount)} · долг ${money(Math.max((item.cash_amount ?? 0) - item.paid_amount, 0))}`, Приход: 0, Расход: 0 })),
     ...payments.map((item) => ({ Раздел: 'Оплаты', Описание: item.description, Приход: item.amount, Расход: 0 })),
+    ...paymentReceipts.map((item) => ({ Раздел: 'Платежный документ', Описание: `${item.receipt_number} · ${item.payment_type}`, Приход: item.amount, Расход: 0 })),
     ...financeIncome.map((item) => ({ Раздел: 'Финансы', Описание: item.description, Приход: item.amount, Расход: 0 })),
     ...financeExpenses.map((item) => ({ Раздел: 'Расходы', Описание: item.description, Приход: 0, Расход: item.amount })),
     ...barterActivity.map((item) => ({ Раздел: 'Бартер', Описание: item.asset_name, Приход: item.total_paid_value ?? item.market_value, Расход: 0 })),

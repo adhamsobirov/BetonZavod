@@ -139,6 +139,7 @@ export const seedData: AppData = {
     { id: 'l1', client_id: 'c1', delivery_id: 'r1', date: '2026-05-16', sample_date: '2026-05-12', test_date: '2026-05-16', concrete_grade: 'M350', object_name: 'ЖК Рассвет', slump: 'П4', strength_mpa: 36.4, temperature: 22, cement_amount: 320, sand_amount: 640, gravel_amount: 1180, water_amount: 180, notes: 'Соответствует норме', status: 'passed' },
     { id: 'l2', client_id: 'c1', delivery_id: 'r2', date: '2026-05-17', sample_date: '2026-05-15', test_date: '2026-05-17', concrete_grade: 'M400', object_name: 'ТЦ Галактика', slump: 'П3', strength_mpa: 41.2, temperature: 23, cement_amount: 360, sand_amount: 610, gravel_amount: 1190, water_amount: 170, notes: 'Ожидает финального протокола', status: 'pending' },
   ],
+  payment_receipts: [],
   excavation_reports: [
     {
       id: 'e1',

@@ -10,6 +10,7 @@ import type {
   FinanceTransaction,
   Invoice,
   LabReport,
+  PaymentReceipt,
 } from '../types'
 import { seedData } from './seed'
 import { hasSupabaseEnv, supabase } from './supabase'
@@ -22,6 +23,7 @@ const emptyData: AppData = {
   client_reports: [],
   barter_assets: [],
   finance_transactions: [],
+  payment_receipts: [],
   daily_reports: [],
   invoices: [],
   lab_reports: [],
@@ -43,6 +45,14 @@ const readLocal = (): AppData => {
 const normalizeData = (data: AppData): AppData => ({
   ...data,
   finance_transactions: data.finance_transactions ?? [],
+  payment_receipts: (data.payment_receipts ?? []).map((receipt) => ({
+    ...receipt,
+    cash_amount: receipt.cash_amount ?? receipt.amount,
+    barter_amount: receipt.barter_amount ?? 0,
+    notes: receipt.notes ?? '',
+    operator_name: receipt.operator_name ?? data.profile?.full_name ?? 'Администратор',
+    created_at: receipt.created_at ?? now(),
+  })),
   daily_reports: data.daily_reports ?? [],
   invoices: data.invoices ?? [],
   profile: {
@@ -126,6 +136,12 @@ const writeLocal = (data: AppData) => localStorage.setItem(STORAGE_KEY, JSON.str
 const now = () => new Date().toISOString()
 const id = () => crypto.randomUUID()
 const moneyText = (value: number) => `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Number.isFinite(value) ? value : 0)} сомони`
+const receiptNumber = (count: number) => `PAY-${new Date().getFullYear()}-${String(count + 1).padStart(5, '0')}`
+const clientBalanceStatus = (cashAvailable: number, debt: number): Client['status'] => {
+  if (debt > 0) return 'debt'
+  if (cashAvailable > 0) return 'active'
+  return 'paid'
+}
 
 const moduleRu: Record<string, string> = {
   Dashboard: 'Дашборд',
@@ -175,6 +191,7 @@ const tableNames = [
   'client_reports',
   'barter_assets',
   'finance_transactions',
+  'payment_receipts',
   'daily_reports',
   'invoices',
   'lab_reports',
@@ -190,6 +207,7 @@ const tableLabel: Partial<Record<MutableTable, string>> = {
   client_reports: 'накладную бетона',
   barter_assets: 'бартерный актив',
   finance_transactions: 'оплату/транзакцию',
+  payment_receipts: 'платежный документ',
   daily_reports: 'ежедневный отчет',
   invoices: 'счет',
   lab_reports: 'лабораторный отчет',
@@ -443,13 +461,15 @@ export function useCrmStore(enabled = true) {
           amount: totalAmount,
           status: 'unpaid',
         }
+        const nextCashAvailable = Math.max((client.cash_available ?? 0) - cashCovered, 0)
+        const nextDebt = Math.max(Math.abs(Math.min(client.balance, 0)) + cashDebt + barterDebt, 0)
         const updatedClient: Client = {
           ...client,
           balance: client.balance - cashDebt - barterDebt,
-          cash_available: Math.max((client.cash_available ?? 0) - cashCovered, 0),
+          cash_available: nextCashAvailable,
           total_supplied_m3: (client.total_supplied_m3 ?? 0) + row.volume_m3,
           total_barter_value: client.total_barter_value ?? 0,
-          status: cashDebt + barterDebt > 0 ? 'debt' : client.status,
+          status: clientBalanceStatus(nextCashAvailable, nextDebt),
           updated_at: now(),
         }
         setData((current) => ({
@@ -491,29 +511,54 @@ export function useCrmStore(enabled = true) {
         await saveRow('finance_transactions', financeRow)
         notify(cashDebt > 0 || actualCoveredBarter < barterAmount ? 'Накладная сохранена, есть долг по наличным или бартеру' : 'Накладная бетона сохранена')
       },
-      addPayment: async (clientId: string, amount: number, date = new Date().toISOString().slice(0, 10), description = 'Оплата клиента') => {
+      addPayment: async (clientId: string, amount: number, date = new Date().toISOString().slice(0, 10), description = 'Оплата клиента', paymentType = 'наличные', notes = '') => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const client = data.clients.find((item) => item.id === clientId)
         if (!client || amount <= 0) return
-        const row: FinanceTransaction = { id: id(), client_id: clientId, date, category: 'Оплата', type: 'income', description, amount, status: 'paid' }
+        const row: FinanceTransaction = { id: id(), client_id: clientId, date, category: 'Оплата', type: 'income', description, amount, payment_method: paymentType, notes, status: 'paid' }
+        const existingDebt = Math.abs(Math.min(client.balance, 0))
+        const prepaymentAmount = Math.max(amount - existingDebt, 0)
+        const nextCashAvailable = (client.cash_available ?? 0) + prepaymentAmount
+        const nextBalance = Math.min(client.balance + amount, 0)
+        const nextDebt = Math.abs(nextBalance)
+        const receipt: PaymentReceipt = {
+          id: id(),
+          receipt_number: receiptNumber(data.payment_receipts.length),
+          date: now(),
+          client_id: clientId,
+          payment_type: paymentType,
+          amount,
+          cash_amount: paymentType === 'бартер' ? 0 : amount,
+          barter_amount: paymentType === 'бартер' ? amount : 0,
+          notes: notes || description,
+          operator_name: data.profile.full_name,
+          finance_transaction_id: row.id,
+          created_at: now(),
+        }
         setData((current) => ({
           ...current,
           finance_transactions: [row, ...current.finance_transactions],
+          payment_receipts: [receipt, ...current.payment_receipts],
           clients: current.clients.map((item) =>
             item.id === clientId
               ? {
                   ...item,
-                  balance: Math.min(item.balance + amount, 0),
+                  balance: nextBalance,
                   total_paid: (item.total_paid ?? 0) + amount,
-                  cash_available: (item.cash_available ?? 0) + amount,
-                  status: item.balance + amount < 0 ? 'debt' : 'active',
+                  cash_available: nextCashAvailable,
+                  status: clientBalanceStatus(nextCashAvailable, nextDebt),
                   updated_at: now(),
                 }
               : item,
           ),
+          activity_logs: [
+            { id: id(), created_at: now(), module: 'Финансы', title: 'Платежный документ создан', description: `${receipt.receipt_number} · ${client.name} · ${moneyText(amount)}` },
+            ...current.activity_logs,
+          ],
         }))
         await saveRow('finance_transactions', row)
-        notify('Оплата добавлена')
+        await saveRow('payment_receipts', receipt)
+        notify(`Оплата добавлена, документ ${receipt.receipt_number} создан`)
       },
       saveDaily: async (report: DailyReport) => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
@@ -657,6 +702,7 @@ export function useCrmStore(enabled = true) {
           client_reports: [],
           barter_assets: [],
           finance_transactions: [],
+          payment_receipts: [],
           daily_reports: [],
           invoices: [],
           lab_reports: [],
@@ -668,7 +714,7 @@ export function useCrmStore(enabled = true) {
         return true
       },
     }),
-    [archiveRow, canManage, data.barter_assets, data.clients, data.invoices, data.profile.full_name, notify, saveRow],
+    [archiveRow, canManage, data.barter_assets, data.clients, data.invoices, data.payment_receipts.length, data.profile.full_name, notify, saveRow],
   )
 
   return { data, setData, loading, toast, notify, canManage, api }
