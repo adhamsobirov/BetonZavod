@@ -49,7 +49,7 @@ import { aggregateExcavation, dailyTotals, excavationTotals, money, numberRu } f
 import { exportExcel, exportPdf, exportReportPdf, printReport, type ExportRow, type ReportSection } from './lib/export'
 import { useCrmStore } from './lib/store'
 import { hasSupabaseEnv, supabase } from './lib/supabase'
-import type { AccountingDebt, BarterAssetType, CementMovement, Client, DailyReport, DailyReportItem, ExcavationReport, FinanceTransaction, Invoice, LabReport, Profile, RawMaterialReceipt, Status } from './types'
+import type { AccountingDebt, BarterAssetType, CementMovement, Client, ClientReport, DailyReport, DailyReportItem, DebtRepayment, ExcavationReport, FinanceTransaction, Invoice, LabReport, Profile, RawMaterialReceipt, Status } from './types'
 import './App.css'
 
 const navItems = [
@@ -1276,6 +1276,7 @@ function ConcreteSales({ store, onDelivery }: { store: Store; onDelivery: () => 
   const [status, setStatus] = useState('all')
   const [minAmount, setMinAmount] = useState('')
   const [maxAmount, setMaxAmount] = useState('')
+  const [editing, setEditing] = useState<ClientReport | null>(null)
   const rows = store.data.client_reports
     .filter((row) => !row.annulled && inDateRange(row.date, range))
     .filter((row) => status === 'all' || row.status === status)
@@ -1319,18 +1320,25 @@ function ConcreteSales({ store, onDelivery }: { store: Store; onDelivery: () => 
                 <td>{money(row.cash_amount ?? 0)}</td>
                 <td>{money(row.barter_amount)}</td>
                 <td>{money(row.paid_amount)}</td>
-                <td>{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('client_reports', row.id, row.object_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</td>
+                <td>
+                  <div className="row-actions">
+                    {store.canManage && <button className="icon-btn" onClick={() => setEditing(row)}><Edit3 size={16} /></button>}
+                    {store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('client_reports', row.id, row.object_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </Card>
+      {editing && <ConcreteSaleEditModal store={store} sale={editing} onClose={() => setEditing(null)} />}
     </>
   )
 }
 
 function RawMaterials({ store }: { store: Store }) {
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<RawMaterialReceipt | null>(null)
   const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
@@ -1347,10 +1355,11 @@ function RawMaterials({ store }: { store: Store }) {
       <Card>
         <table className="crm-table">
           <thead><tr><th>Дата</th><th>Поставщик</th><th>Сырьё</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th>Статус</th><th>Действия</th></tr></thead>
-          <tbody>{rows.map((row) => <tr key={row.id}><td>{row.date}</td><td>{row.supplier}</td><td>{row.material}</td><td>{numberRu(row.quantity, 2)} {row.unit}</td><td>{money(row.price)}</td><td>{money(row.amount)}</td><td><span className={row.status === 'debt' ? 'tag tag-red' : 'tag tag-green'}>{row.status === 'debt' ? 'Долг' : 'Оплачено'}</span></td><td>{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('raw_material_receipts', row.id, row.material, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</td></tr>)}</tbody>
+          <tbody>{rows.map((row) => <tr key={row.id}><td>{row.date}</td><td>{row.supplier}</td><td>{row.material}</td><td>{numberRu(row.quantity, 2)} {row.unit}</td><td>{money(row.price)}</td><td>{money(row.amount)}</td><td><span className={row.status === 'debt' ? 'tag tag-red' : 'tag tag-green'}>{row.status === 'debt' ? 'Долг' : 'Оплачено'}</span></td><td><div className="row-actions">{store.canManage && <button className="icon-btn" onClick={() => setEditing(row)}><Edit3 size={16} /></button>}{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('raw_material_receipts', row.id, row.material, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</div></td></tr>)}</tbody>
         </table>
       </Card>
       {open && <RawMaterialModal store={store} onClose={() => setOpen(false)} />}
+      {editing && <RawMaterialModal store={store} receipt={editing} onClose={() => setEditing(null)} />}
     </>
   )
 }
@@ -1385,6 +1394,7 @@ function DebtsPage({ store }: { store: Store }) {
   const [status, setStatus] = useState('all')
   const [type, setType] = useState('all')
   const [repayDebt, setRepayDebt] = useState<AccountingDebt | null>(null)
+  const [editingRepayment, setEditingRepayment] = useState<DebtRepayment | null>(null)
   const rows = store.data.accounting_debts
     .filter((row) => !row.annulled && inDateRange(row.date, range))
     .filter((row) => status === 'all' || row.status === status)
@@ -1403,7 +1413,31 @@ function DebtsPage({ store }: { store: Store }) {
           <tbody>{rows.map((row) => <tr key={row.id}><td>{row.date}</td><td>{row.type === 'receivable' ? 'Они должны' : 'Мы должны'}</td><td>{row.counterparty}</td><td>{money(row.amount)}</td><td>{money(row.paid_amount)}</td><td>{money(row.remaining_amount)}</td><td><span className={row.status === 'paid' ? 'tag tag-green' : row.status === 'partial' ? 'tag tag-amber' : 'tag tag-red'}>{row.status === 'paid' ? 'Погашен' : row.status === 'partial' ? 'Частично' : 'Открыт'}</span></td><td><div className="row-actions">{store.canManage && row.remaining_amount > 0 && <button className="secondary" onClick={() => setRepayDebt(row)}>Погасить</button>}{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('accounting_debts', row.id, row.counterparty, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</div></td></tr>)}</tbody>
         </table>
       </Card>
+      <Card>
+        <div className="card-title"><div><h2>История погашений</h2><p>Изменение или удаление пересчитывает долг и связанный приход/расход.</p></div></div>
+        <table className="crm-table">
+          <thead><tr><th>Дата</th><th>Контрагент</th><th>Тип</th><th>Сумма</th><th>Примечание</th><th>Действия</th></tr></thead>
+          <tbody>
+            {store.data.debt_repayments.filter((row) => !row.annulled).map((row) => {
+              const debt = store.data.accounting_debts.find((item) => item.id === row.debt_id)
+              return (
+                <tr key={row.id}>
+                  <td>{row.date}</td>
+                  <td>{debt?.counterparty ?? 'Долг'}</td>
+                  <td>{row.direction === 'receivable' ? 'Они должны' : 'Мы должны'}</td>
+                  <td>{money(row.amount)}</td>
+                  <td>{row.notes ?? '-'}</td>
+                  <td><div className="row-actions">{store.canManage && <button className="icon-btn" onClick={() => setEditingRepayment(row)}><Edit3 size={16} /></button>}{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('debt_repayments', row.id, debt?.counterparty ?? row.id, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</div></td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
       {repayDebt && <DebtRepaymentModal debt={repayDebt} store={store} onClose={() => setRepayDebt(null)} />}
+      {editingRepayment && store.data.accounting_debts.find((item) => item.id === editingRepayment.debt_id) && (
+        <DebtRepaymentModal debt={store.data.accounting_debts.find((item) => item.id === editingRepayment.debt_id)!} repayment={editingRepayment} store={store} onClose={() => setEditingRepayment(null)} />
+      )}
     </>
   )
 }
@@ -1623,8 +1657,39 @@ function AccountingTransactionList({ store, title, subtitle, rows, category }: {
   )
 }
 
-function RawMaterialModal({ store, onClose }: { store: Store; onClose: () => void }) {
+function ConcreteSaleEditModal({ store, sale, onClose }: { store: Store; sale: ClientReport; onClose: () => void }) {
+  const [form, setForm] = useState<ClientReport>(sale)
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!form.object_name || form.volume_m3 <= 0 || form.amount <= 0) return store.notify('Заполните объект, объем и сумму продажи')
+    await store.api.updateConcreteSale(form)
+    onClose()
+  }
+  const client = store.data.clients.find((item) => item.id === sale.client_id)
+  return (
+    <Modal title="Изменить продажу бетона" subtitle="После сохранения будут пересчитаны приход, бартер, долг, баланс клиента, дашборд и ежедневные итоги." onClose={onClose} onSubmit={submit}>
+      <div className="form-grid three-cols">
+        <Field label="Клиент" value={client?.name ?? 'Клиент'} onChange={() => undefined} />
+        <Field label="Дата" value={form.date} onChange={(v) => setForm({ ...form, date: v })} type="date" />
+        <Field label="Объект" value={form.object_name} onChange={(v) => setForm({ ...form, object_name: v })} />
+        <Field label="Марка бетона" value={form.concrete_grade} onChange={(v) => setForm({ ...form, concrete_grade: v })} />
+        <Field label="Объем м³" value={form.volume_m3} onChange={(v) => setForm({ ...form, volume_m3: Number(v) })} type="number" min={0} />
+        <Field label="Сумма накладной" value={form.amount} onChange={(v) => setForm({ ...form, amount: Number(v) })} type="number" min={0} />
+        <Field label="Транспорт" value={form.transport_cost ?? 0} onChange={(v) => setForm({ ...form, transport_cost: Number(v) })} type="number" min={0} />
+        <Field label="Рейсы" value={form.trip_count ?? 0} onChange={(v) => setForm({ ...form, trip_count: Number(v) })} type="number" min={0} />
+        <Field label="Комментарий" value={form.comment ?? ''} onChange={(v) => setForm({ ...form, comment: v })} />
+      </div>
+      <div className="calc-strip">
+        <SummaryLine label="Будет пересчитано" value="приход / бартер / долг" />
+        <SummaryLine label="Текущая сумма" value={money(form.amount)} />
+      </div>
+    </Modal>
+  )
+}
+
+function RawMaterialModal({ store, receipt, onClose }: { store: Store; receipt?: RawMaterialReceipt; onClose: () => void }) {
   const [form, setForm] = useState<Omit<RawMaterialReceipt, 'id' | 'amount' | 'debt_id' | 'created_at' | 'updated_at'>>({
+    ...receipt,
     date: isoDate(),
     supplier: '',
     material: 'Цемент',
@@ -1633,15 +1698,17 @@ function RawMaterialModal({ store, onClose }: { store: Store; onClose: () => voi
     price: 0,
     status: 'paid',
     notes: '',
+    ...(receipt ?? {}),
   })
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!form.supplier || !form.material || form.quantity <= 0 || form.price <= 0) return store.notify('Заполните поставщика, сырье, количество и цену')
-    await store.api.addRawMaterialReceipt(form)
+    if (receipt) await store.api.updateRawMaterialReceipt({ ...receipt, ...form, amount: form.quantity * form.price, updated_at: receipt.updated_at ?? isoDate() })
+    else await store.api.addRawMaterialReceipt(form)
     onClose()
   }
   return (
-    <Modal title="Приход сырья" subtitle="Если статус Долг, будет создан долг в разделе Мы должны." onClose={onClose} onSubmit={submit}>
+    <Modal title={receipt ? 'Изменить приход сырья' : 'Приход сырья'} subtitle="При изменении статуса/суммы связанный долг или расход будет пересчитан." onClose={onClose} onSubmit={submit}>
       <div className="form-grid three-cols">
         <Field label="Дата" value={form.date} onChange={(v) => setForm({ ...form, date: v })} type="date" />
         <Field label="Поставщик" value={form.supplier} onChange={(v) => setForm({ ...form, supplier: v })} />
@@ -1657,20 +1724,22 @@ function RawMaterialModal({ store, onClose }: { store: Store; onClose: () => voi
   )
 }
 
-function DebtRepaymentModal({ debt, store, onClose }: { debt: AccountingDebt; store: Store; onClose: () => void }) {
-  const [amount, setAmount] = useState(debt.remaining_amount)
-  const [date, setDate] = useState(isoDate())
-  const [notes, setNotes] = useState('')
+function DebtRepaymentModal({ debt, repayment, store, onClose }: { debt: AccountingDebt; repayment?: DebtRepayment; store: Store; onClose: () => void }) {
+  const [amount, setAmount] = useState(repayment?.amount ?? debt.remaining_amount)
+  const [date, setDate] = useState(repayment?.date ?? isoDate())
+  const [notes, setNotes] = useState(repayment?.notes ?? '')
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    await store.api.repayDebt(debt.id, amount, date, notes)
+    if (repayment) await store.api.updateDebtRepayment({ ...repayment, amount, date, notes })
+    else await store.api.repayDebt(debt.id, amount, date, notes)
     onClose()
   }
+  const maxAmount = repayment ? debt.remaining_amount + repayment.amount : debt.remaining_amount
   return (
-    <Modal title="Погашение долга" subtitle={`${debt.counterparty} · остаток ${money(debt.remaining_amount)}`} onClose={onClose} onSubmit={submit}>
+    <Modal title={repayment ? 'Изменить погашение долга' : 'Погашение долга'} subtitle={`${debt.counterparty} · доступно ${money(maxAmount)}`} onClose={onClose} onSubmit={submit}>
       <div className="form-grid two-cols">
         <Field label="Дата" value={date} onChange={setDate} type="date" />
-        <Field label="Сумма" value={amount} onChange={(v) => setAmount(Math.min(Number(v), debt.remaining_amount))} type="number" min={0} />
+        <Field label="Сумма" value={amount} onChange={(v) => setAmount(Math.min(Number(v), maxAmount))} type="number" min={0} />
         <Field label="Примечание" value={notes} onChange={setNotes} />
       </div>
     </Modal>
@@ -2874,7 +2943,7 @@ function AdminActionButton({ children, className, action }: { children: ReactNod
     <>
       <button type="button" className={className} onClick={() => setOpen(true)}>{children}</button>
       {open && (
-        <Modal title="Подтвердите удаление" subtitle="Это действие нельзя отменить. Доступ проверяется через роль администратора в Supabase." onClose={() => setOpen(false)} onSubmit={submit}>
+        <Modal title="Подтвердите удаление" subtitle="Связанные записи, долги, приход/расход и балансы будут пересчитаны, если эта операция связана с учетом. Доступ проверяется через роль администратора в Supabase." onClose={() => setOpen(false)} onSubmit={submit}>
           <div className="form-grid">
             <Field label="Причина" value={reason} onChange={setReason} placeholder="Необязательно" />
           </div>

@@ -54,6 +54,8 @@ export type ClientReport = {
   comment?: string
   status?: Status
   annulled?: boolean
+  recalculated_at?: string
+  updated_at?: string
   barter_asset_allocations?: { asset_id: string; amount: number }[]
 }
 
@@ -180,6 +182,8 @@ export type DebtRepayment = {
   notes?: string
   finance_transaction_id?: string
   created_at: string
+  updated_at?: string
+  annulled?: boolean
 }
 
 export type RawMaterialReceipt = {
@@ -196,6 +200,7 @@ export type RawMaterialReceipt = {
   debt_id?: string
   created_at: string
   updated_at?: string
+  recalculated_at?: string
   annulled?: boolean
 }
 

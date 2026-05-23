@@ -72,6 +72,8 @@ const normalizeData = (data: AppData): AppData => ({
     ...repayment,
     notes: repayment.notes ?? '',
     created_at: repayment.created_at ?? now(),
+    updated_at: repayment.updated_at ?? repayment.created_at ?? now(),
+    annulled: repayment.annulled ?? false,
   })),
   raw_material_receipts: (data.raw_material_receipts ?? []).map((receipt) => ({
     ...receipt,
@@ -127,6 +129,7 @@ const normalizeData = (data: AppData): AppData => ({
     transport_cost: report.transport_cost ?? 0,
     trip_count: report.trip_count ?? 0,
     comment: report.comment ?? '',
+    updated_at: report.updated_at ?? now(),
   })),
   lab_reports: (data.lab_reports ?? []).map((report) => {
     const legacyStatus = report.status as unknown as string
@@ -317,6 +320,371 @@ export function useCrmStore(enabled = true) {
     if (hasSupabaseEnv && supabase) await supabase.from(table).update({ archived: true, updated_at: now() }).eq('id', rowId)
   }, [])
 
+  const saveRows = useCallback(async (rows: { table: keyof AppData; row: Record<string, unknown> }[]) => {
+    await Promise.all(rows.map(({ table, row }) => saveRow(table, row)))
+  }, [saveRow])
+
+  const linkedFinance = useCallback((module: string, recordId: string) =>
+    data.finance_transactions.filter((row) => row.linked_module === module && row.linked_record_id === recordId && !row.annulled),
+  [data.finance_transactions])
+
+  const linkedDebts = useCallback((module: string, recordId: string) =>
+    data.accounting_debts.filter((row) => row.source_module === module && row.source_record_id === recordId && !row.annulled),
+  [data.accounting_debts])
+
+  const auditRow = useCallback((title: string, description: string) => ({
+    id: id(),
+    created_at: now(),
+    module: 'Аудит',
+    title,
+    description: `${data.profile.full_name}: ${description}`,
+  }), [data.profile.full_name])
+
+  const reverseConcreteSale = useCallback(async (rowId: string, reason = '') => {
+    if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+    const sale = data.client_reports.find((row) => row.id === rowId && !row.annulled)
+    const client = sale ? data.clients.find((row) => row.id === sale.client_id) : undefined
+    if (!sale || !client) return false
+    const debts = linkedDebts('Продажи бетона', sale.id)
+    if (debts.some((debt) => debt.paid_amount > 0)) {
+      notify('Продажа уже связана с погашением долга. Сначала удалите погашение долга, затем повторите операцию.')
+      return false
+    }
+    const debtAmount = debts.reduce((sum, debt) => sum + debt.amount, 0)
+    const cashBack = sale.paid_amount ?? 0
+    const nextDebt = Math.max(Math.abs(Math.min(client.balance + debtAmount, 0)), 0)
+    const updatedClient: Client = {
+      ...client,
+      balance: Math.min(client.balance + debtAmount, 0),
+      cash_available: (client.cash_available ?? 0) + cashBack,
+      total_supplied_m3: Math.max((client.total_supplied_m3 ?? 0) - sale.volume_m3, 0),
+      status: clientBalanceStatus((client.cash_available ?? 0) + cashBack, nextDebt),
+      updated_at: now(),
+    }
+    const allocationMap = new Map((sale.barter_asset_allocations ?? []).map((allocation) => [allocation.asset_id, allocation.amount]))
+    const updatedAssets = data.barter_assets.map((asset) => {
+      const amount = allocationMap.get(asset.id) ?? 0
+      if (!amount) return asset
+      const used = Math.max((asset.used_amount ?? 0) - amount, 0)
+      const remaining = Math.max((asset.remaining_amount ?? 0) + amount, 0)
+      return {
+        ...asset,
+        used_amount: used,
+        remaining_amount: remaining,
+        status: used <= 0 ? ('active' as const) : ('partial' as const),
+        asset_status: remaining <= 0 ? ('completed' as const) : ('active' as const),
+        owned_at: remaining > 0 ? undefined : asset.owned_at,
+        updated_at: now(),
+      }
+    })
+    const updatedSale: ClientReport = { ...sale, annulled: true, status: 'annulled', recalculated_at: now(), updated_at: now() }
+    const updatedFinance = data.finance_transactions.map((row) =>
+      row.linked_module === 'Продажи бетона' && row.linked_record_id === sale.id && !row.annulled
+        ? { ...row, annulled: true, status: 'annulled' as const }
+        : row,
+    )
+    const updatedDebts = data.accounting_debts.map((row) =>
+      row.source_module === 'Продажи бетона' && row.source_record_id === sale.id && !row.annulled
+        ? { ...row, annulled: true, status: 'cancelled' as const, remaining_amount: 0, updated_at: now() }
+        : row,
+    )
+    const audit = auditRow('Аннулирование продажи бетона', `аннулировал продажу ${sale.object_name}. Связанные приход, бартер и долг пересчитаны${reason ? `. Причина: ${reason}` : ''}`)
+    setData((current) => ({
+      ...current,
+      clients: current.clients.map((row) => (row.id === client.id ? updatedClient : row)),
+      client_reports: current.client_reports.map((row) => (row.id === sale.id ? updatedSale : row)),
+      barter_assets: updatedAssets,
+      finance_transactions: updatedFinance,
+      accounting_debts: updatedDebts,
+      activity_logs: [audit, ...current.activity_logs],
+    }))
+    await saveRows([
+      { table: 'clients', row: updatedClient },
+      { table: 'client_reports', row: updatedSale },
+      ...updatedAssets.filter((asset) => allocationMap.has(asset.id)).map((row) => ({ table: 'barter_assets' as const, row })),
+      ...updatedFinance.filter((row) => row.linked_module === 'Продажи бетона' && row.linked_record_id === sale.id).map((row) => ({ table: 'finance_transactions' as const, row })),
+      ...updatedDebts.filter((row) => row.source_module === 'Продажи бетона' && row.source_record_id === sale.id).map((row) => ({ table: 'accounting_debts' as const, row })),
+      { table: 'activity_logs', row: audit },
+    ])
+    notify('Продажа аннулирована, связанные записи пересчитаны')
+    return true
+  }, [auditRow, canManage, data.accounting_debts, data.barter_assets, data.client_reports, data.clients, data.finance_transactions, linkedDebts, notify, saveRows])
+
+  const updateConcreteSale = useCallback(async (sale: ClientReport) => {
+    if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+    const oldSale = data.client_reports.find((row) => row.id === sale.id && !row.annulled)
+    if (!oldSale) return
+    const client = data.clients.find((row) => row.id === oldSale.client_id)
+    if (!client) return
+    const oldDebts = linkedDebts('Продажи бетона', oldSale.id)
+    if (oldDebts.some((debt) => debt.paid_amount > 0)) {
+      notify('Нельзя изменить продажу: по связанному долгу уже есть погашение. Сначала удалите погашение.')
+      return
+    }
+    const oldDebtAmount = oldDebts.reduce((sum, debt) => sum + debt.amount, 0)
+    const restoredClient = {
+      ...client,
+      balance: Math.min(client.balance + oldDebtAmount, 0),
+      cash_available: (client.cash_available ?? 0) + (oldSale.paid_amount ?? 0),
+      total_supplied_m3: Math.max((client.total_supplied_m3 ?? 0) - oldSale.volume_m3, 0),
+    }
+    let assetsAfterReverse = data.barter_assets.map((asset) => {
+      const allocation = (oldSale.barter_asset_allocations ?? []).find((item) => item.asset_id === asset.id)
+      if (!allocation) return asset
+      const used = Math.max(asset.used_amount - allocation.amount, 0)
+      const remaining = asset.remaining_amount + allocation.amount
+      return { ...asset, used_amount: used, remaining_amount: remaining, status: used > 0 ? ('partial' as const) : ('active' as const), asset_status: 'active' as const, owned_at: remaining > 0 ? undefined : asset.owned_at, updated_at: now() }
+    })
+    const barterPercent = Math.max(0, Math.min(client.barter_percent ?? 0, 100))
+    const nextAmount = Math.max(sale.amount, 0)
+    const barterAmount = Math.round((nextAmount * barterPercent) / 100)
+    const cashAmount = nextAmount - barterAmount
+    const cashCovered = Math.min(cashAmount, Math.max(restoredClient.cash_available ?? 0, 0))
+    const cashDebt = Math.max(cashAmount - cashCovered, 0)
+    const allocated = allocateBarterAssets(assetsAfterReverse, client.id, barterAmount)
+    assetsAfterReverse = allocated.updatedAssets
+    const totalDebt = cashDebt + allocated.remainingDebt
+    const updatedSale: ClientReport = {
+      ...oldSale,
+      ...sale,
+      amount: nextAmount,
+      cash_amount: cashAmount,
+      paid_amount: cashCovered,
+      barter_amount: barterAmount,
+      barter_asset_allocations: allocated.allocations,
+      status: totalDebt > 0 ? 'unpaid' : 'paid',
+      recalculated_at: now(),
+      updated_at: now(),
+    }
+    const nextBalance = restoredClient.balance - totalDebt
+    const nextCashAvailable = Math.max((restoredClient.cash_available ?? 0) - cashCovered, 0)
+    const updatedClient: Client = {
+      ...restoredClient,
+      balance: nextBalance,
+      cash_available: nextCashAvailable,
+      total_supplied_m3: (restoredClient.total_supplied_m3 ?? 0) + updatedSale.volume_m3,
+      status: clientBalanceStatus(nextCashAvailable, Math.abs(Math.min(nextBalance, 0))),
+      updated_at: now(),
+    }
+    const oldFinance = linkedFinance('Продажи бетона', oldSale.id)[0]
+    const financeRow: FinanceTransaction | undefined = cashCovered > 0
+      ? {
+          id: oldFinance?.id ?? id(),
+          client_id: client.id,
+          date: updatedSale.date,
+          category: 'Продажа бетона',
+          type: 'income',
+          description: `${client.name}: ${updatedSale.object_name}, ${updatedSale.volume_m3} м³ ${updatedSale.concrete_grade}`,
+          amount: cashCovered,
+          payment_method: 'предоплата',
+          linked_module: 'Продажи бетона',
+          linked_record_id: updatedSale.id,
+          status: 'paid',
+        }
+      : oldFinance ? { ...oldFinance, annulled: true, status: 'annulled' as const } : undefined
+    const oldDebt = oldDebts[0]
+    const debtRow: AccountingDebt | undefined = totalDebt > 0
+      ? {
+          id: oldDebt?.id ?? id(),
+          type: 'receivable',
+          counterparty: client.name,
+          client_id: client.id,
+          source_module: 'Продажи бетона',
+          source_record_id: updatedSale.id,
+          date: updatedSale.date,
+          amount: totalDebt,
+          paid_amount: 0,
+          remaining_amount: totalDebt,
+          status: 'open',
+          notes: `Накладная: ${updatedSale.object_name}. Наличный долг ${moneyText(cashDebt)}, бартерный долг ${moneyText(allocated.remainingDebt)}`,
+          created_at: oldDebt?.created_at ?? now(),
+          updated_at: now(),
+        }
+      : oldDebt ? { ...oldDebt, annulled: true, status: 'cancelled' as const, remaining_amount: 0, updated_at: now() } : undefined
+    const audit = auditRow('Пересчет продажи бетона', `изменил продажу ${updatedSale.object_name}. Приход, бартер, долг и баланс клиента пересчитаны`)
+    setData((current) => ({
+      ...current,
+      clients: current.clients.map((row) => (row.id === client.id ? updatedClient : row)),
+      client_reports: current.client_reports.map((row) => (row.id === updatedSale.id ? updatedSale : row)),
+      barter_assets: assetsAfterReverse,
+      finance_transactions: financeRow ? [financeRow, ...current.finance_transactions.filter((row) => row.id !== financeRow.id)] : current.finance_transactions,
+      accounting_debts: debtRow ? [debtRow, ...current.accounting_debts.filter((row) => row.id !== debtRow.id)] : current.accounting_debts,
+      activity_logs: [audit, ...current.activity_logs],
+    }))
+    await saveRows([
+      { table: 'clients', row: updatedClient },
+      { table: 'client_reports', row: updatedSale },
+      ...assetsAfterReverse.filter((asset) => data.barter_assets.find((old) => old.id === asset.id && (old.used_amount !== asset.used_amount || old.remaining_amount !== asset.remaining_amount))).map((row) => ({ table: 'barter_assets' as const, row })),
+      ...(financeRow ? [{ table: 'finance_transactions' as const, row: financeRow }] : []),
+      ...(debtRow ? [{ table: 'accounting_debts' as const, row: debtRow }] : []),
+      { table: 'activity_logs', row: audit },
+    ])
+    notify('Продажа изменена, связанные записи пересчитаны')
+  }, [auditRow, canManage, data.barter_assets, data.client_reports, data.clients, linkedDebts, linkedFinance, notify, saveRows])
+
+  const updateRawMaterialReceipt = useCallback(async (receipt: RawMaterialReceipt) => {
+    if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+    const old = data.raw_material_receipts.find((row) => row.id === receipt.id && !row.annulled)
+    if (!old) return
+    const oldDebt = old.debt_id ? data.accounting_debts.find((row) => row.id === old.debt_id && !row.annulled) : linkedDebts('Приход сырья', old.id)[0]
+    if (oldDebt?.paid_amount && oldDebt.paid_amount > 0) {
+      notify('Нельзя изменить приход сырья: связанный долг уже частично погашен. Сначала удалите погашение.')
+      return
+    }
+    const amount = Math.max(receipt.quantity, 0) * Math.max(receipt.price, 0)
+    const oldFinance = linkedFinance('Приход сырья', old.id)[0]
+    let debtRow: AccountingDebt | undefined
+    let financeRow: FinanceTransaction | undefined
+    const row: RawMaterialReceipt = { ...receipt, amount, updated_at: now(), recalculated_at: now() }
+    if (row.status === 'debt') {
+      debtRow = {
+        id: oldDebt?.id ?? id(),
+        type: 'payable',
+        counterparty: row.supplier,
+        source_module: 'Приход сырья',
+        source_record_id: row.id,
+        date: row.date,
+        amount,
+        paid_amount: 0,
+        remaining_amount: amount,
+        status: 'open',
+        notes: `${row.material} · ${row.quantity} ${row.unit}`,
+        created_at: oldDebt?.created_at ?? now(),
+        updated_at: now(),
+      }
+      row.debt_id = debtRow.id
+      if (oldFinance) financeRow = { ...oldFinance, annulled: true, status: 'annulled' as const }
+    } else {
+      row.debt_id = undefined
+      if (oldDebt) debtRow = { ...oldDebt, annulled: true, status: 'cancelled' as const, remaining_amount: 0, updated_at: now() }
+      financeRow = {
+        id: oldFinance?.id ?? id(),
+        date: row.date,
+        category: 'Сырьё',
+        type: 'expense',
+        description: `${row.material}: ${row.supplier}`,
+        amount,
+        payment_method: 'банк',
+        supplier_person: row.supplier,
+        notes: row.notes,
+        linked_module: 'Приход сырья',
+        linked_record_id: row.id,
+        status: 'paid',
+      }
+    }
+    const audit = auditRow('Пересчет прихода сырья', `изменил приход сырья ${row.material}. Связанный долг/расход пересчитан`)
+    setData((current) => ({
+      ...current,
+      raw_material_receipts: current.raw_material_receipts.map((item) => (item.id === row.id ? row : item)),
+      accounting_debts: debtRow ? [debtRow, ...current.accounting_debts.filter((item) => item.id !== debtRow.id)] : current.accounting_debts,
+      finance_transactions: financeRow ? [financeRow, ...current.finance_transactions.filter((item) => item.id !== financeRow.id)] : current.finance_transactions,
+      activity_logs: [audit, ...current.activity_logs],
+    }))
+    await saveRows([
+      { table: 'raw_material_receipts', row },
+      ...(debtRow ? [{ table: 'accounting_debts' as const, row: debtRow }] : []),
+      ...(financeRow ? [{ table: 'finance_transactions' as const, row: financeRow }] : []),
+      { table: 'activity_logs', row: audit },
+    ])
+    notify('Приход сырья изменен, связанные записи пересчитаны')
+  }, [auditRow, canManage, data.accounting_debts, data.raw_material_receipts, linkedDebts, linkedFinance, notify, saveRows])
+
+  const reverseRawMaterialReceipt = useCallback(async (rowId: string, reason = '') => {
+    if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+    const receipt = data.raw_material_receipts.find((row) => row.id === rowId && !row.annulled)
+    if (!receipt) return false
+    const debt = receipt.debt_id ? data.accounting_debts.find((row) => row.id === receipt.debt_id && !row.annulled) : linkedDebts('Приход сырья', receipt.id)[0]
+    if (debt?.paid_amount && debt.paid_amount > 0) {
+      notify('Приход сырья нельзя удалить: связанный долг уже погашался. Сначала удалите погашение.')
+      return false
+    }
+    const updatedReceipt: RawMaterialReceipt = { ...receipt, annulled: true, status: receipt.status, recalculated_at: now(), updated_at: now() }
+    const debtRow = debt ? { ...debt, annulled: true, status: 'cancelled' as const, remaining_amount: 0, updated_at: now() } : undefined
+    const updatedFinance = data.finance_transactions.map((row) =>
+      row.linked_module === 'Приход сырья' && row.linked_record_id === receipt.id && !row.annulled
+        ? { ...row, annulled: true, status: 'annulled' as const }
+        : row,
+    )
+    const audit = auditRow('Аннулирование прихода сырья', `аннулировал приход сырья ${receipt.material}. Связанный долг/расход пересчитан${reason ? `. Причина: ${reason}` : ''}`)
+    setData((current) => ({
+      ...current,
+      raw_material_receipts: current.raw_material_receipts.map((row) => (row.id === receipt.id ? updatedReceipt : row)),
+      accounting_debts: debtRow ? current.accounting_debts.map((row) => (row.id === debtRow.id ? debtRow : row)) : current.accounting_debts,
+      finance_transactions: updatedFinance,
+      activity_logs: [audit, ...current.activity_logs],
+    }))
+    await saveRows([
+      { table: 'raw_material_receipts', row: updatedReceipt },
+      ...(debtRow ? [{ table: 'accounting_debts' as const, row: debtRow }] : []),
+      ...updatedFinance.filter((row) => row.linked_module === 'Приход сырья' && row.linked_record_id === receipt.id).map((row) => ({ table: 'finance_transactions' as const, row })),
+      { table: 'activity_logs', row: audit },
+    ])
+    notify('Приход сырья аннулирован, связанные записи пересчитаны')
+    return true
+  }, [auditRow, canManage, data.accounting_debts, data.finance_transactions, data.raw_material_receipts, linkedDebts, notify, saveRows])
+
+  const updateDebtRepayment = useCallback(async (repayment: DebtRepayment) => {
+    if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+    const old = data.debt_repayments.find((row) => row.id === repayment.id && !row.annulled)
+    if (!old) return
+    const debt = data.accounting_debts.find((row) => row.id === old.debt_id && !row.annulled)
+    if (!debt) return
+    const available = debt.remaining_amount + old.amount
+    const nextAmount = Math.min(Math.max(repayment.amount, 0), available)
+    const nextPaid = Math.max(debt.paid_amount - old.amount + nextAmount, 0)
+    const nextRemaining = Math.max(debt.amount - nextPaid, 0)
+    const updatedDebt: AccountingDebt = { ...debt, paid_amount: nextPaid, remaining_amount: nextRemaining, status: debtStatus(nextRemaining, nextPaid), updated_at: now() }
+    const updatedRepayment: DebtRepayment = { ...old, ...repayment, amount: nextAmount, updated_at: now() }
+    const finance = old.finance_transaction_id ? data.finance_transactions.find((row) => row.id === old.finance_transaction_id) : undefined
+    const updatedFinance: FinanceTransaction | undefined = finance ? { ...finance, amount: nextAmount, date: updatedRepayment.date, notes: updatedRepayment.notes, status: 'paid' } : undefined
+    const audit = auditRow('Пересчет погашения долга', `изменил погашение долга ${debt.counterparty}. Остаток долга пересчитан`)
+    setData((current) => ({
+      ...current,
+      accounting_debts: current.accounting_debts.map((row) => (row.id === debt.id ? updatedDebt : row)),
+      debt_repayments: current.debt_repayments.map((row) => (row.id === old.id ? updatedRepayment : row)),
+      finance_transactions: updatedFinance ? current.finance_transactions.map((row) => (row.id === updatedFinance.id ? updatedFinance : row)) : current.finance_transactions,
+      activity_logs: [audit, ...current.activity_logs],
+    }))
+    await saveRows([
+      { table: 'accounting_debts', row: updatedDebt },
+      { table: 'debt_repayments', row: updatedRepayment },
+      ...(updatedFinance ? [{ table: 'finance_transactions' as const, row: updatedFinance }] : []),
+      { table: 'activity_logs', row: audit },
+    ])
+    notify('Погашение изменено, долг пересчитан')
+  }, [auditRow, canManage, data.accounting_debts, data.debt_repayments, data.finance_transactions, notify, saveRows])
+
+  const reverseDebtRepayment = useCallback(async (rowId: string, reason = '') => {
+    if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+    const repayment = data.debt_repayments.find((row) => row.id === rowId && !row.annulled)
+    if (!repayment) return false
+    const debt = data.accounting_debts.find((row) => row.id === repayment.debt_id && !row.annulled)
+    if (!debt) return false
+    const nextPaid = Math.max(debt.paid_amount - repayment.amount, 0)
+    const nextRemaining = Math.max(debt.amount - nextPaid, 0)
+    const updatedDebt: AccountingDebt = { ...debt, paid_amount: nextPaid, remaining_amount: nextRemaining, status: debtStatus(nextRemaining, nextPaid), updated_at: now() }
+    const updatedRepayment: DebtRepayment = { ...repayment, annulled: true, updated_at: now() }
+    const updatedFinance = repayment.finance_transaction_id
+      ? data.finance_transactions.map((row) => (row.id === repayment.finance_transaction_id ? { ...row, annulled: true, status: 'annulled' as const } : row))
+      : data.finance_transactions
+    const audit = auditRow('Аннулирование погашения долга', `аннулировал погашение долга ${debt.counterparty}. Долг и приход/расход пересчитаны${reason ? `. Причина: ${reason}` : ''}`)
+    setData((current) => ({
+      ...current,
+      accounting_debts: current.accounting_debts.map((row) => (row.id === debt.id ? updatedDebt : row)),
+      debt_repayments: current.debt_repayments.map((row) => (row.id === repayment.id ? updatedRepayment : row)),
+      finance_transactions: updatedFinance,
+      activity_logs: [audit, ...current.activity_logs],
+    }))
+    await saveRows([
+      { table: 'accounting_debts', row: updatedDebt },
+      { table: 'debt_repayments', row: updatedRepayment },
+      ...updatedFinance.filter((row) => row.id === repayment.finance_transaction_id).map((row) => ({ table: 'finance_transactions' as const, row })),
+      { table: 'activity_logs', row: audit },
+    ])
+    notify('Погашение аннулировано, долг пересчитан')
+    return true
+  }, [auditRow, canManage, data.accounting_debts, data.debt_repayments, data.finance_transactions, notify, saveRows])
+
   const api = useMemo(
     () => ({
       addClient: async (client: Omit<Client, 'id' | 'updated_at'>) => {
@@ -462,6 +830,9 @@ export function useCrmStore(enabled = true) {
         if (finance) await saveRow('finance_transactions', finance)
         notify(receipt.status === 'debt' ? 'Приход сырья сохранен и создан долг поставщику' : 'Приход сырья сохранен')
       },
+      updateConcreteSale,
+      updateRawMaterialReceipt,
+      updateDebtRepayment,
       updateFinance: async (transaction: FinanceTransaction) => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const row = { ...transaction }
@@ -808,6 +1179,13 @@ export function useCrmStore(enabled = true) {
       },
       adminDelete: async (table: MutableTable, rowId: string, entityName: string, mode: 'delete' | 'annul' = 'delete', reason = '') => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        if (table === 'client_reports') return reverseConcreteSale(rowId, reason)
+        if (table === 'raw_material_receipts') return reverseRawMaterialReceipt(rowId, reason)
+        if (table === 'debt_repayments') return reverseDebtRepayment(rowId, reason)
+        if (table === 'finance_transactions') {
+          const repayment = data.debt_repayments.find((row) => row.finance_transaction_id === rowId && !row.annulled)
+          if (repayment) return reverseDebtRepayment(repayment.id, reason)
+        }
         const barterToReverse = table === 'barter_assets' ? data.barter_assets.find((asset) => asset.id === rowId) : undefined
         const audit = {
           id: id(),
@@ -893,7 +1271,7 @@ export function useCrmStore(enabled = true) {
         return true
       },
     }),
-    [archiveRow, canManage, data.accounting_debts, data.barter_assets, data.clients, data.invoices, data.payment_receipts.length, data.profile.full_name, notify, saveRow],
+    [archiveRow, canManage, data.accounting_debts, data.barter_assets, data.clients, data.debt_repayments, data.invoices, data.payment_receipts.length, data.profile.full_name, notify, reverseConcreteSale, reverseDebtRepayment, reverseRawMaterialReceipt, saveRow, updateConcreteSale, updateDebtRepayment, updateRawMaterialReceipt],
   )
 
   return { data, setData, loading, toast, notify, canManage, api }
