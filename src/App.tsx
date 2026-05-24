@@ -1675,6 +1675,7 @@ function ConcreteSaleEditModal({ store, sale, onClose }: { store: Store; sale: C
         <Field label="Марка бетона" value={form.concrete_grade} onChange={(v) => setForm({ ...form, concrete_grade: v })} />
         <Field label="Объем м³" value={form.volume_m3} onChange={(v) => setForm({ ...form, volume_m3: Number(v) })} type="number" min={0} />
         <Field label="Сумма накладной" value={form.amount} onChange={(v) => setForm({ ...form, amount: Number(v) })} type="number" min={0} />
+        <Field label="Наличными получил сейчас" value={form.cash_received_now ?? form.paid_amount ?? 0} onChange={(v) => setForm({ ...form, cash_received_now: Number(v) })} type="number" min={0} />
         <Field label="Транспорт" value={form.transport_cost ?? 0} onChange={(v) => setForm({ ...form, transport_cost: Number(v) })} type="number" min={0} />
         <Field label="Рейсы" value={form.trip_count ?? 0} onChange={(v) => setForm({ ...form, trip_count: Number(v) })} type="number" min={0} />
         <Field label="Комментарий" value={form.comment ?? ''} onChange={(v) => setForm({ ...form, comment: v })} />
@@ -2357,8 +2358,15 @@ function RecentActivity({ store }: { store: Store }) {
   )
 }
 
-function ClientModal({ client, onClose, onSave, onUpdate }: { client?: Client; onClose: () => void; onSave: (client: Omit<Client, 'id' | 'updated_at'>) => Promise<void>; onUpdate?: (client: Client) => Promise<void> }) {
+function ClientModal({ client, onClose, onSave, onUpdate }: { client?: Client; onClose: () => void; onSave: (client: Omit<Client, 'id' | 'updated_at'>, initialBarter?: { type: BarterAssetType; asset_name: string; market_value: number; contract_number?: string; comment?: string }) => Promise<void>; onUpdate?: (client: Client) => Promise<void> }) {
   const [form, setForm] = useState(client ?? { name: '', login: '', phone: '+992 ', contract_type: '100% cash / Без бартера', contract_total: 0, cash_percent: 100, barter_percent: 0, balance: 0, cash_available: 0, total_supplied_m3: 0, total_paid: 0, total_barter_value: 0, status: 'active' as Status, updated_at: '' })
+  const [initialBarter, setInitialBarter] = useState({
+    type: 'apartment' as BarterAssetType,
+    asset_name: '',
+    market_value: 0,
+    contract_number: '',
+    comment: '',
+  })
   const [error, setError] = useState('')
   const changeContract = (value: string) => {
     const option = contractOptions.find((item) => item.value === value)
@@ -2378,11 +2386,24 @@ function ClientModal({ client, onClose, onSave, onUpdate }: { client?: Client; o
       setError('Сумма процентов наличных и бартера должна быть ровно 100%.')
       return
     }
+    if (!client && form.barter_percent > 0 && initialBarter.market_value <= 0) {
+      setError('Для бартерного договора укажите стоимость первого бартерного актива.')
+      return
+    }
     const safeLogin = form.login || `client-${Date.now()}`
     if (client && onUpdate) await onUpdate({ ...form, login: safeLogin } as Client)
-    else await onSave({ ...form, login: safeLogin })
+    else await onSave(
+      { ...form, login: safeLogin },
+      form.barter_percent > 0
+        ? {
+            ...initialBarter,
+            asset_name: initialBarter.asset_name || buildAssetName({ type: initialBarter.type, address: initialBarter.asset_name, building: initialBarter.asset_name, equipment_name: initialBarter.asset_name }),
+          }
+        : undefined,
+    )
     onClose()
   }
+  const showInitialBarter = !client && form.barter_percent > 0
   return (
     <Modal title={client ? 'Редактировать клиента' : 'Создать клиента'} onClose={onClose} onSubmit={submit}>
       <h3>Основная информация</h3>
@@ -2404,7 +2425,26 @@ function ClientModal({ client, onClose, onSave, onUpdate }: { client?: Client; o
         <p className={form.cash_percent + form.barter_percent === 100 ? 'green-text' : 'error-text'}>
           Итого: {form.cash_percent + form.barter_percent}% · Наличные {form.cash_percent}% / Бартер {form.barter_percent}%
         </p>
-        <p className="muted-text">Бартерные активы добавляются в карточке клиента после сохранения.</p>
+        {showInitialBarter && (
+          <>
+            <h3>Бартерный актив</h3>
+            <div className="form-grid two-cols">
+              <SelectField label="Тип бартера" value={initialBarter.type} onChange={(v) => setInitialBarter({ ...initialBarter, type: v as BarterAssetType })} options={[
+                { value: 'apartment', label: 'Квартира' },
+                { value: 'car', label: 'Машина' },
+                { value: 'equipment', label: 'Техника' },
+                { value: 'land', label: 'Земля' },
+                { value: 'other', label: 'Другое' },
+              ]} />
+              <Field label="Название / описание объекта" value={initialBarter.asset_name} onChange={(v) => setInitialBarter({ ...initialBarter, asset_name: v })} placeholder="Например квартира в ЖК..." />
+              <Field label="Стоимость бартера" value={initialBarter.market_value} onChange={(v) => setInitialBarter({ ...initialBarter, market_value: Number(v) })} type="number" min={0} />
+              <Field label="Номер бартерного договора" value={initialBarter.contract_number} onChange={(v) => setInitialBarter({ ...initialBarter, contract_number: v })} />
+              <Field label="Примечание" value={initialBarter.comment} onChange={(v) => setInitialBarter({ ...initialBarter, comment: v })} />
+            </div>
+            <p className="muted-text">Актив будет создан сразу вместе с клиентом: использовано 0, остаток равен стоимости бартера.</p>
+          </>
+        )}
+        {!showInitialBarter && <p className="muted-text">Дополнительные бартерные активы можно добавить в карточке клиента после сохранения.</p>}
         {error && <p className="error-text">{error}</p>}
       </div>
     </Modal>
@@ -2578,19 +2618,21 @@ function ConcreteDeliveryModal({ store, onClose }: { store: Store; onClose: () =
     price_per_m3: 0,
     trip_count: 0,
     transport_cost: 0,
+    cash_received_now: 0,
     comment: '',
   })
   const client = store.data.clients.find((item) => item.id === form.client_id)
   const amount = form.volume_m3 * form.price_per_m3 + form.transport_cost
   const barter = client ? Math.round((amount * Math.max(0, Math.min(client.barter_percent ?? 0, 100))) / 100) : 0
   const cashPart = Math.max(amount - barter, 0)
-  const cashBefore = Math.max(client?.cash_available ?? 0, 0)
-  const cashAfter = Math.max(cashBefore - cashPart, 0)
-  const cashDebt = Math.max(cashPart - cashBefore, 0)
+  const cashReceivedNow = Math.min(Math.max(form.cash_received_now, 0), amount)
+  const cashCovered = Math.min(cashPart, cashReceivedNow)
+  const cashDebt = Math.max(cashPart - cashCovered, 0)
   const barterBefore = client ? store.data.barter_assets
     .filter((asset) => asset.client_id === client.id && asset.remaining_amount > 0 && asset.status !== 'written_off' && asset.status !== 'owned')
     .reduce((sum, asset) => sum + asset.remaining_amount, 0) : 0
   const barterAfter = Math.max(barterBefore - barter, 0)
+  const barterWrittenOff = Math.min(barter, barterBefore)
   const barterDebt = Math.max(barter - barterBefore, 0)
   const projectedDebt = cashDebt + barterDebt
   const submit = async (event: FormEvent) => {
@@ -2614,25 +2656,26 @@ function ConcreteDeliveryModal({ store, onClose }: { store: Store; onClose: () =
         <Field label="Цена за м³ (сомони)" value={form.price_per_m3} onChange={(v) => setForm({ ...form, price_per_m3: Number(v) })} type="number" />
         <Field label="Количество рейсов" value={form.trip_count} onChange={(v) => setForm({ ...form, trip_count: Number(v) })} type="number" />
         <Field label="Транспорт (сомони)" value={form.transport_cost} onChange={(v) => setForm({ ...form, transport_cost: Number(v) })} type="number" />
+        <Field label="Наличными получил сейчас" value={form.cash_received_now} onChange={(v) => setForm({ ...form, cash_received_now: Number(v) })} type="number" />
         <Field label="Комментарий" value={form.comment} onChange={(v) => setForm({ ...form, comment: v })} />
       </div>
       <div className="calc-strip">
         <SummaryLine label="Сумма бетона" value={money(form.volume_m3 * form.price_per_m3)} />
-        <SummaryLine label="Итого накладная" value={money(amount)} />
-        <SummaryLine label="Денежная часть" value={money(cashPart)} tone="blue" />
-        <SummaryLine label="Бартерная часть" value={money(barter)} tone="amber" />
+        <SummaryLine label="Сумма заказа" value={money(amount)} />
+        <SummaryLine label="Наличными получил сейчас" value={money(cashReceivedNow)} tone="green" />
+        <SummaryLine label="Денежная часть по договору" value={money(cashPart)} tone="blue" />
+        <SummaryLine label="Бартерная часть по договору" value={money(barter)} tone="amber" />
       </div>
       <div className="calc-strip balance-preview">
-        <SummaryLine label="Наличные до" value={money(cashBefore)} />
-        <SummaryLine label="Наличные после" value={money(cashAfter)} tone={cashDebt > 0 ? 'red' : 'green'} />
-        <SummaryLine label="Бартер до" value={money(barterBefore)} />
-        <SummaryLine label="Бартер после" value={money(barterAfter)} tone={barterDebt > 0 ? 'red' : 'green'} />
-        <SummaryLine label="Долг по наличным" value={money(cashDebt)} tone={cashDebt > 0 ? 'red' : 'green'} />
-        <SummaryLine label="Долг по бартеру" value={money(barterDebt)} tone={barterDebt > 0 ? 'red' : 'green'} />
-        <SummaryLine label="Остаточный долг" value={money(projectedDebt)} tone={projectedDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Списано с бартера" value={money(barterWrittenOff)} tone="amber" />
+        <SummaryLine label="Остаток бартера после операции" value={money(barterAfter)} tone={barterDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Неоплаченная денежная часть" value={money(cashDebt)} tone={cashDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Недостаток бартера" value={money(barterDebt)} tone={barterDebt > 0 ? 'red' : 'green'} />
+        <SummaryLine label="Остаток долга" value={money(projectedDebt)} tone={projectedDebt > 0 ? 'red' : 'green'} />
         <SummaryLine label="Сплит договора" value={`${client?.cash_percent ?? 100}% / ${client?.barter_percent ?? 0}%`} />
       </div>
-      {projectedDebt > 0 && <p className="error-text">По этой накладной возникнет долг: не хватает наличного или бартерного остатка.</p>}
+      {cashDebt > 0 && <p className="error-text">Наличными получено меньше денежной части договора. Разница уйдет в долг клиента.</p>}
+      {barterDebt > 0 && <p className="error-text">Бартерного остатка не хватает. Недостаток бартера будет добавлен в долг.</p>}
     </Modal>
   )
 }

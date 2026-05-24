@@ -126,6 +126,7 @@ const normalizeData = (data: AppData): AppData => ({
   client_reports: (data.client_reports ?? []).map((report) => ({
     ...report,
     cash_amount: report.cash_amount ?? Math.max(report.amount - report.barter_amount, 0),
+    cash_received_now: report.cash_received_now ?? report.paid_amount ?? 0,
     transport_cost: report.transport_cost ?? 0,
     trip_count: report.trip_count ?? 0,
     comment: report.comment ?? '',
@@ -241,6 +242,13 @@ const tableNames = [
 ] as const
 
 type MutableTable = Exclude<keyof AppData, 'profile'>
+type InitialBarterAsset = {
+  type: BarterAsset['type']
+  asset_name: string
+  market_value: number
+  contract_number?: string
+  comment?: string
+}
 
 const tableLabel: Partial<Record<MutableTable, string>> = {
   clients: 'клиента',
@@ -351,14 +359,17 @@ export function useCrmStore(enabled = true) {
       return false
     }
     const debtAmount = debts.reduce((sum, debt) => sum + debt.amount, 0)
-    const cashBack = sale.paid_amount ?? 0
+    const cashBack = sale.cash_received_now === undefined ? sale.paid_amount ?? 0 : 0
+    const oldExtraCash = sale.cash_received_now === undefined ? 0 : Math.max((sale.cash_received_now ?? 0) - (sale.paid_amount ?? 0), 0)
     const nextDebt = Math.max(Math.abs(Math.min(client.balance + debtAmount, 0)), 0)
+    const nextCashAvailable = Math.max((client.cash_available ?? 0) + cashBack - oldExtraCash, 0)
     const updatedClient: Client = {
       ...client,
       balance: Math.min(client.balance + debtAmount, 0),
-      cash_available: (client.cash_available ?? 0) + cashBack,
+      cash_available: nextCashAvailable,
+      total_paid: Math.max((client.total_paid ?? 0) - (sale.cash_received_now ?? 0), 0),
       total_supplied_m3: Math.max((client.total_supplied_m3 ?? 0) - sale.volume_m3, 0),
-      status: clientBalanceStatus((client.cash_available ?? 0) + cashBack, nextDebt),
+      status: clientBalanceStatus(nextCashAvailable, nextDebt),
       updated_at: now(),
     }
     const allocationMap = new Map((sale.barter_asset_allocations ?? []).map((allocation) => [allocation.asset_id, allocation.amount]))
@@ -422,10 +433,11 @@ export function useCrmStore(enabled = true) {
       return
     }
     const oldDebtAmount = oldDebts.reduce((sum, debt) => sum + debt.amount, 0)
+    const oldExtraCash = oldSale.cash_received_now === undefined ? 0 : Math.max((oldSale.cash_received_now ?? 0) - (oldSale.paid_amount ?? 0), 0)
     const restoredClient = {
       ...client,
       balance: Math.min(client.balance + oldDebtAmount, 0),
-      cash_available: (client.cash_available ?? 0) + (oldSale.paid_amount ?? 0),
+      cash_available: Math.max((client.cash_available ?? 0) + (oldSale.cash_received_now === undefined ? oldSale.paid_amount ?? 0 : 0) - oldExtraCash, 0),
       total_supplied_m3: Math.max((client.total_supplied_m3 ?? 0) - oldSale.volume_m3, 0),
     }
     let assetsAfterReverse = data.barter_assets.map((asset) => {
@@ -439,7 +451,9 @@ export function useCrmStore(enabled = true) {
     const nextAmount = Math.max(sale.amount, 0)
     const barterAmount = Math.round((nextAmount * barterPercent) / 100)
     const cashAmount = nextAmount - barterAmount
-    const cashCovered = Math.min(cashAmount, Math.max(restoredClient.cash_available ?? 0, 0))
+    const immediateCash = Math.min(Math.max(sale.cash_received_now ?? sale.paid_amount ?? 0, 0), nextAmount)
+    const cashCovered = Math.min(cashAmount, immediateCash)
+    const extraCash = Math.max(immediateCash - cashCovered, 0)
     const cashDebt = Math.max(cashAmount - cashCovered, 0)
     const allocated = allocateBarterAssets(assetsAfterReverse, client.id, barterAmount)
     assetsAfterReverse = allocated.updatedAssets
@@ -450,6 +464,7 @@ export function useCrmStore(enabled = true) {
       amount: nextAmount,
       cash_amount: cashAmount,
       paid_amount: cashCovered,
+      cash_received_now: immediateCash,
       barter_amount: barterAmount,
       barter_asset_allocations: allocated.allocations,
       status: totalDebt > 0 ? 'unpaid' : 'paid',
@@ -457,17 +472,18 @@ export function useCrmStore(enabled = true) {
       updated_at: now(),
     }
     const nextBalance = restoredClient.balance - totalDebt
-    const nextCashAvailable = Math.max((restoredClient.cash_available ?? 0) - cashCovered, 0)
+    const nextCashAvailable = Math.max(restoredClient.cash_available ?? 0, 0) + extraCash
     const updatedClient: Client = {
       ...restoredClient,
       balance: nextBalance,
       cash_available: nextCashAvailable,
+      total_paid: (restoredClient.total_paid ?? 0) + immediateCash - (oldSale.cash_received_now ?? oldSale.paid_amount ?? 0),
       total_supplied_m3: (restoredClient.total_supplied_m3 ?? 0) + updatedSale.volume_m3,
       status: clientBalanceStatus(nextCashAvailable, Math.abs(Math.min(nextBalance, 0))),
       updated_at: now(),
     }
     const oldFinance = linkedFinance('Продажи бетона', oldSale.id)[0]
-    const financeRow: FinanceTransaction | undefined = cashCovered > 0
+    const financeRow: FinanceTransaction | undefined = immediateCash > 0
       ? {
           id: oldFinance?.id ?? id(),
           client_id: client.id,
@@ -475,8 +491,8 @@ export function useCrmStore(enabled = true) {
           category: 'Продажа бетона',
           type: 'income',
           description: `${client.name}: ${updatedSale.object_name}, ${updatedSale.volume_m3} м³ ${updatedSale.concrete_grade}`,
-          amount: cashCovered,
-          payment_method: 'предоплата',
+          amount: immediateCash,
+          payment_method: 'наличные',
           linked_module: 'Продажи бетона',
           linked_record_id: updatedSale.id,
           status: 'paid',
@@ -687,13 +703,38 @@ export function useCrmStore(enabled = true) {
 
   const api = useMemo(
     () => ({
-      addClient: async (client: Omit<Client, 'id' | 'updated_at'>) => {
+      addClient: async (client: Omit<Client, 'id' | 'updated_at'>, initialBarter?: InitialBarterAsset) => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const initialCash = Math.max(client.total_paid ?? 0, 0)
-        const row = { ...client, id: id(), updated_at: now(), total_supplied_m3: 0, total_paid: initialCash, cash_available: initialCash, total_barter_value: 0 }
-        setData((current) => ({ ...current, clients: [row, ...current.clients] }))
+        const barterValue = Math.max(initialBarter?.market_value ?? 0, 0)
+        const row: Client = { ...client, id: id(), updated_at: now(), total_supplied_m3: 0, total_paid: initialCash, cash_available: initialCash, total_barter_value: barterValue }
+        const asset: BarterAsset | undefined = initialBarter && barterValue > 0 ? {
+          id: id(),
+          client_id: row.id,
+          type: initialBarter.type,
+          asset_name: initialBarter.asset_name || 'Бартерный актив',
+          market_value: barterValue,
+          cost_price: 0,
+          contract_number: initialBarter.contract_number,
+          linked_contract_amount: row.contract_total ?? barterValue,
+          cash_paid: 0,
+          barter_value: barterValue,
+          total_paid_value: barterValue,
+          remaining_debt: Math.max((row.contract_total ?? barterValue) - barterValue, 0),
+          asset_status: 'active',
+          used_amount: 0,
+          remaining_amount: barterValue,
+          status: 'active',
+          photos: [],
+          comment: initialBarter.comment ?? '',
+          source_client_name: row.name,
+          created_at: now(),
+          updated_at: now(),
+        } : undefined
+        setData((current) => ({ ...current, clients: [row, ...current.clients], barter_assets: asset ? [asset, ...current.barter_assets] : current.barter_assets }))
         await saveRow('clients', row)
-        notify('Клиент сохранен')
+        if (asset) await saveRow('barter_assets', asset)
+        notify(asset ? 'Клиент и бартерный актив сохранены' : 'Клиент сохранен')
       },
       updateClient: async (client: Client) => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
@@ -956,7 +997,9 @@ export function useCrmStore(enabled = true) {
         const barterPercent = Math.max(0, Math.min(client.barter_percent ?? 0, 100))
         const barterAmount = Math.round((totalAmount * barterPercent) / 100)
         const cashAmount = totalAmount - barterAmount
-        const cashCovered = Math.min(cashAmount, Math.max(client.cash_available ?? 0, 0))
+        const cashReceivedNow = Math.min(Math.max(delivery.cash_received_now ?? 0, 0), totalAmount)
+        const cashCovered = Math.min(cashAmount, cashReceivedNow)
+        const extraCash = Math.max(cashReceivedNow - cashCovered, 0)
         const cashDebt = Math.max(cashAmount - cashCovered, 0)
         const { updatedAssets, allocations, covered: actualCoveredBarter, remainingDebt: barterDebt } = allocateBarterAssets(data.barter_assets, client.id, barterAmount)
         const row: ClientReport = {
@@ -969,6 +1012,7 @@ export function useCrmStore(enabled = true) {
           amount: totalAmount,
           cash_amount: cashAmount,
           paid_amount: cashCovered,
+          cash_received_now: cashReceivedNow,
           barter_amount: barterAmount,
           barter_asset_allocations: allocations,
           transport_cost: delivery.transport_cost ?? 0,
@@ -976,15 +1020,15 @@ export function useCrmStore(enabled = true) {
           comment: delivery.comment ?? '',
           status: 'unpaid',
         }
-        const financeRow: FinanceTransaction | undefined = cashCovered > 0 ? {
+        const financeRow: FinanceTransaction | undefined = cashReceivedNow > 0 ? {
           id: id(),
           client_id: client.id,
           date: delivery.date,
           category: 'Продажа бетона',
           type: 'income',
           description: `${client.name}: ${delivery.object_name}, ${delivery.volume_m3} м³ ${delivery.concrete_grade}`,
-          amount: cashCovered,
-          payment_method: 'предоплата',
+          amount: cashReceivedNow,
+          payment_method: 'наличные',
           linked_module: 'Продажи бетона',
           linked_record_id: row.id,
           status: 'paid',
@@ -1006,12 +1050,13 @@ export function useCrmStore(enabled = true) {
           created_at: now(),
           updated_at: now(),
         } : undefined
-        const nextCashAvailable = Math.max((client.cash_available ?? 0) - cashCovered, 0)
+        const nextCashAvailable = Math.max(client.cash_available ?? 0, 0) + extraCash
         const nextDebt = Math.max(Math.abs(Math.min(client.balance, 0)) + cashDebt + barterDebt, 0)
         const updatedClient: Client = {
           ...client,
           balance: client.balance - cashDebt - barterDebt,
           cash_available: nextCashAvailable,
+          total_paid: (client.total_paid ?? 0) + cashReceivedNow,
           total_supplied_m3: (client.total_supplied_m3 ?? 0) + row.volume_m3,
           total_barter_value: client.total_barter_value ?? 0,
           status: clientBalanceStatus(nextCashAvailable, nextDebt),

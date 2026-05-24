@@ -49,6 +49,7 @@ export type ClientReport = {
   paid_amount: number
   barter_amount: number
   cash_amount?: number
+  cash_received_now?: number
   transport_cost?: number
   trip_count?: number
   comment?: string
@@ -72,6 +73,7 @@ export type BarterAsset = {
   total_paid_value?: number
   remaining_debt?: number
   asset_status?: BarterDealStatus
+  contract_number?: string
   used_amount: number
   remaining_amount: number
   status: BarterAssetStatus
