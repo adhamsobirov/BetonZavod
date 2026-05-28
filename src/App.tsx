@@ -49,7 +49,7 @@ import { aggregateExcavation, dailyTotals, excavationTotals, money, numberRu } f
 import { exportExcel, exportPdf, exportReportPdf, printReport, type ExportRow, type ReportSection } from './lib/export'
 import { useCrmStore } from './lib/store'
 import { hasSupabaseEnv, supabase } from './lib/supabase'
-import type { AccountingDebt, BarterAssetType, CementMovement, Client, ClientReport, DailyReport, DailyReportItem, DebtRepayment, ExcavationReport, FinanceTransaction, Invoice, LabReport, Profile, RawMaterialReceipt, Status } from './types'
+import type { AccountingDebt, BarterAsset, BarterAssetType, CementMovement, Client, ClientReport, DailyReport, DailyReportItem, DebtRepayment, ExcavationReport, FinanceTransaction, Invoice, LabReport, Profile, RawMaterialReceipt, Status } from './types'
 import './App.css'
 
 const navItems = [
@@ -1372,18 +1372,67 @@ function SalaryPage({ store }: { store: Store }) {
 function BarterPage({ store }: { store: Store }) {
   const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
   const [search, setSearch] = useState('')
-  const rows = store.data.barter_assets.filter((asset) => inDateRange(asset.created_at, range)).filter((asset) => textMatches(`${asset.asset_name} ${asset.comment} ${asset.market_value}`, search))
+  const [editing, setEditing] = useState<BarterAsset | null>(null)
+  const rows = store.data.barter_assets
+    .filter((asset) => inDateRange(asset.created_at, range))
+    .filter((asset) => textMatches(`${asset.asset_name} ${asset.comment} ${asset.market_value} ${asset.contract_number ?? ''} ${store.data.clients.find((client) => client.id === asset.client_id)?.name ?? ''}`, search))
+  const totals = rows.reduce((acc, asset) => ({
+    total: acc.total + asset.market_value,
+    used: acc.used + asset.used_amount,
+    remaining: acc.remaining + asset.remaining_amount,
+  }), { total: 0, used: 0, remaining: 0 })
   return (
     <>
       <PageHeader title="Бартер с застройщиками" subtitle="Бартерные договоры, лимиты, использовано и остаток." />
       <FilterPanel range={range} onRange={setRange} search={search} onSearch={setSearch} />
-      <div className="operation-cards">
-        {rows.map((asset) => {
-          const client = store.data.clients.find((item) => item.id === asset.client_id)
-          const progress = asset.market_value ? Math.min(100, (asset.used_amount / asset.market_value) * 100) : 0
-          return <Card key={asset.id}><div className="card-title"><div><span className={asset.remaining_amount <= 0 ? 'tag tag-green' : 'tag tag-amber'}>{asset.remaining_amount <= 0 ? '100% закрыт' : 'Активный'}</span><h2>{asset.asset_name}</h2><p>{client?.name ?? 'Клиент'} · {barterAssetTypeLabels[asset.type]}</p></div><strong>{money(asset.remaining_amount)}</strong></div><div className="mobile-progress"><div><i style={{ width: `${progress}%` }} /></div><span>Использовано {money(asset.used_amount)} из {money(asset.market_value)}</span></div></Card>
-        })}
+      <div className="kpi-grid four">
+        <Kpi title="Бартер всего" value={money(totals.total)} />
+        <Kpi title="Использовано" value={money(totals.used)} tone="blue" />
+        <Kpi title="Остаток" value={money(totals.remaining)} tone="green" />
+        <Kpi title="Прогресс" value={`${numberRu(totals.total ? (totals.used / totals.total) * 100 : 0, 1)}%`} tone="amber" />
       </div>
+      <Card>
+        <table className="crm-table">
+          <thead>
+            <tr>
+              <th>Дата</th>
+              <th>Клиент</th>
+              <th>Бартерный объект</th>
+              <th>№ договора</th>
+              <th>Сумма бартера</th>
+              <th>Использовано</th>
+              <th>Остаток</th>
+              <th>Прогресс</th>
+              <th>Статус</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((asset) => {
+              const client = store.data.clients.find((item) => item.id === asset.client_id)
+              const progress = asset.market_value ? Math.min(100, (asset.used_amount / asset.market_value) * 100) : 0
+              const statusText = asset.asset_status === 'cancelled' ? 'Отменен' : asset.remaining_amount <= 0 ? 'Завершен' : 'Активный'
+              return (
+                <tr key={asset.id}>
+                  <td>{new Date(asset.created_at).toLocaleDateString('ru-RU')}</td>
+                  <td>{client ? <Link to={`/clients/${client.id}`}>{client.name}</Link> : 'Клиент'}</td>
+                  <td><strong>{asset.asset_name}</strong><small>{barterAssetTypeLabels[asset.type]}</small></td>
+                  <td>{asset.contract_number || '-'}</td>
+                  <td>{money(asset.market_value)}</td>
+                  <td>{money(asset.used_amount)}</td>
+                  <td>{money(asset.remaining_amount)}</td>
+                  <td><div className="mobile-progress compact"><div><i style={{ width: `${progress}%` }} /></div><span>{numberRu(progress, 1)}%</span></div></td>
+                  <td><span className={asset.remaining_amount <= 0 ? 'tag tag-green' : asset.asset_status === 'cancelled' ? 'tag tag-red' : 'tag tag-amber'}>{statusText}</span></td>
+                  <td><div className="row-actions">{store.canManage && client && <button className="icon-btn" onClick={() => setEditing(asset)}><Edit3 size={16} /></button>}{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('barter_assets', asset.id, asset.asset_name, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</div></td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+      {editing && store.data.clients.find((client) => client.id === editing.client_id) && (
+        <BarterAssetModal client={store.data.clients.find((client) => client.id === editing.client_id)!} asset={editing} store={store} onClose={() => setEditing(null)} />
+      )}
     </>
   )
 }
@@ -1392,33 +1441,48 @@ function DebtsPage({ store }: { store: Store }) {
   const [range, setRange] = useState<DateRange>(rangeFromPreset('month'))
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
-  const [type, setType] = useState('all')
+  const [type, setType] = useState<'receivable' | 'payable' | 'history'>('receivable')
   const [repayDebt, setRepayDebt] = useState<AccountingDebt | null>(null)
   const [editingRepayment, setEditingRepayment] = useState<DebtRepayment | null>(null)
   const rows = store.data.accounting_debts
     .filter((row) => !row.annulled && inDateRange(row.date, range))
     .filter((row) => status === 'all' || row.status === status)
-    .filter((row) => type === 'all' || row.type === type)
+    .filter((row) => row.type === type)
     .filter((row) => textMatches(`${row.counterparty} ${row.amount} ${row.remaining_amount} ${row.notes ?? ''}`, search))
-  const receivable = rows.filter((row) => row.type === 'receivable').reduce((sum, row) => sum + row.remaining_amount, 0)
-  const payable = rows.filter((row) => row.type === 'payable').reduce((sum, row) => sum + row.remaining_amount, 0)
+  const allDebtsInRange = store.data.accounting_debts.filter((row) => !row.annulled && inDateRange(row.date, range))
+  const receivable = allDebtsInRange.filter((row) => row.type === 'receivable').reduce((sum, row) => sum + row.remaining_amount, 0)
+  const payable = allDebtsInRange.filter((row) => row.type === 'payable').reduce((sum, row) => sum + row.remaining_amount, 0)
+  const repayments = store.data.debt_repayments
+    .filter((row) => !row.annulled && inDateRange(row.date, range))
+    .filter((row) => textMatches(`${store.data.accounting_debts.find((debt) => debt.id === row.debt_id)?.counterparty ?? ''} ${row.amount} ${row.notes ?? ''}`, search))
   return (
     <>
       <PageHeader title="Долги" subtitle="Мы должны, они должны и история погашений." />
-      <FilterPanel range={range} onRange={setRange} search={search} onSearch={setSearch} status={status} onStatus={setStatus} category={type} onCategory={setType} statusOptions={[{ value: 'open', label: 'Открыт' }, { value: 'partial', label: 'Частично' }, { value: 'paid', label: 'Погашен' }, { value: 'overdue', label: 'Просрочен' }]} categoryOptions={[{ value: 'receivable', label: 'Они должны' }, { value: 'payable', label: 'Мы должны' }]} />
-      <div className="kpi-grid four"><Kpi title="Они должны" value={money(receivable)} tone="green" /><Kpi title="Мы должны" value={money(payable)} tone="red" /><Kpi title="Записей" value={numberRu(rows.length)} /><Kpi title="Погашено" value={money(store.data.debt_repayments.reduce((sum, row) => sum + row.amount, 0))} tone="blue" /></div>
-      <Card>
-        <table className="crm-table">
-          <thead><tr><th>Дата</th><th>Тип</th><th>Контрагент</th><th>Сумма</th><th>Оплачено</th><th>Остаток</th><th>Статус</th><th>Действия</th></tr></thead>
-          <tbody>{rows.map((row) => <tr key={row.id}><td>{row.date}</td><td>{row.type === 'receivable' ? 'Они должны' : 'Мы должны'}</td><td>{row.counterparty}</td><td>{money(row.amount)}</td><td>{money(row.paid_amount)}</td><td>{money(row.remaining_amount)}</td><td><span className={row.status === 'paid' ? 'tag tag-green' : row.status === 'partial' ? 'tag tag-amber' : 'tag tag-red'}>{row.status === 'paid' ? 'Погашен' : row.status === 'partial' ? 'Частично' : 'Открыт'}</span></td><td><div className="row-actions">{store.canManage && row.remaining_amount > 0 && <button className="secondary" onClick={() => setRepayDebt(row)}>Погасить</button>}{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('accounting_debts', row.id, row.counterparty, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</div></td></tr>)}</tbody>
-        </table>
-      </Card>
-      <Card>
-        <div className="card-title"><div><h2>История погашений</h2><p>Изменение или удаление пересчитывает долг и связанный приход/расход.</p></div></div>
+      <FilterPanel range={range} onRange={setRange} search={search} onSearch={setSearch} status={status} onStatus={setStatus} statusOptions={[{ value: 'open', label: 'Открыт' }, { value: 'partial', label: 'Частично' }, { value: 'paid', label: 'Погашен' }, { value: 'overdue', label: 'Просрочен' }]} />
+      <div className="toolbar compact">
+        <button className={type === 'payable' ? 'primary' : 'secondary'} onClick={() => setType('payable')}>Мы должны</button>
+        <button className={type === 'receivable' ? 'primary' : 'secondary'} onClick={() => setType('receivable')}>Они должны</button>
+        <button className={type === 'history' ? 'primary' : 'secondary'} onClick={() => setType('history')}>История погашений</button>
+      </div>
+      <div className="kpi-grid four"><Kpi title="Они должны" value={money(receivable)} tone="green" /><Kpi title="Мы должны" value={money(payable)} tone="red" /><Kpi title="Записей" value={numberRu(type === 'history' ? repayments.length : rows.length)} /><Kpi title="Погашено" value={money(repayments.reduce((sum, row) => sum + row.amount, 0))} tone="blue" /></div>
+      {type !== 'history' && (
+        <Card>
+          <table className="crm-table">
+            <thead><tr><th>Дата</th><th>Контрагент / клиент</th><th>Общий долг</th><th>Оплачено</th><th>Остаток</th><th>Последний платеж</th><th>Статус</th><th>Примечание</th><th>Действия</th></tr></thead>
+            <tbody>{rows.map((row) => {
+              const debtRepayments = store.data.debt_repayments.filter((repayment) => repayment.debt_id === row.id && !repayment.annulled)
+              const lastPaymentDate = debtRepayments.sort((a, b) => b.date.localeCompare(a.date))[0]?.date
+              return <tr key={row.id}><td>{row.date}</td><td>{row.client_id ? <Link to={`/clients/${row.client_id}`}>{row.counterparty}</Link> : row.counterparty}</td><td>{money(row.amount)}</td><td>{money(row.paid_amount)}</td><td>{money(row.remaining_amount)}</td><td>{lastPaymentDate ?? '-'}</td><td><span className={row.status === 'paid' ? 'tag tag-green' : row.status === 'partial' ? 'tag tag-amber' : 'tag tag-red'}>{row.status === 'paid' ? 'Погашен' : row.status === 'partial' ? 'Частично' : 'Открыт'}</span></td><td>{row.notes ?? '-'}</td><td><div className="row-actions">{store.canManage && row.remaining_amount > 0 && <button className="secondary" onClick={() => setRepayDebt(row)}>Частично</button>}{store.canManage && row.remaining_amount > 0 && <button className="secondary" onClick={() => void store.api.repayDebt(row.id, row.remaining_amount, isoDate(), 'Полное погашение')}>Полностью</button>}{store.canManage && <AdminActionButton className="icon-btn" action={(reason) => store.api.adminDelete('accounting_debts', row.id, row.counterparty, 'delete', reason)}><Trash2 size={16} /></AdminActionButton>}</div></td></tr>
+            })}</tbody>
+          </table>
+        </Card>
+      )}
+      {type === 'history' && <Card>
+        <div className="card-title"><div><h2>История погашений</h2><p>Погашение “Они должны” идет в Приходы, “Мы должны” идет в Расходы.</p></div></div>
         <table className="crm-table">
           <thead><tr><th>Дата</th><th>Контрагент</th><th>Тип</th><th>Сумма</th><th>Примечание</th><th>Действия</th></tr></thead>
           <tbody>
-            {store.data.debt_repayments.filter((row) => !row.annulled).map((row) => {
+            {repayments.map((row) => {
               const debt = store.data.accounting_debts.find((item) => item.id === row.debt_id)
               return (
                 <tr key={row.id}>
@@ -1433,7 +1497,7 @@ function DebtsPage({ store }: { store: Store }) {
             })}
           </tbody>
         </table>
-      </Card>
+      </Card>}
       {repayDebt && <DebtRepaymentModal debt={repayDebt} store={store} onClose={() => setRepayDebt(null)} />}
       {editingRepayment && store.data.accounting_debts.find((item) => item.id === editingRepayment.debt_id) && (
         <DebtRepaymentModal debt={store.data.accounting_debts.find((item) => item.id === editingRepayment.debt_id)!} repayment={editingRepayment} store={store} onClose={() => setEditingRepayment(null)} />
@@ -2451,17 +2515,21 @@ function ClientModal({ client, onClose, onSave, onUpdate }: { client?: Client; o
   )
 }
 
-function BarterAssetModal({ client, store, onClose }: { client: Client; store: Store; onClose: () => void }) {
+function BarterAssetModal({ client, asset, store, onClose }: { client: Client; asset?: BarterAsset; store: Store; onClose: () => void }) {
   const [form, setForm] = useState({
+    ...asset,
     client_id: client.id,
     type: 'car' as BarterAssetType,
     asset_name: '',
     market_value: 0,
     cost_price: 0,
+    contract_number: '',
     linked_contract_amount: 0,
     cash_paid: 0,
     barter_value: 0,
-    asset_status: 'active' as const,
+    asset_status: 'active' as BarterAsset['asset_status'],
+    used_amount: 0,
+    remaining_amount: 0,
     photos: [] as string[],
     comment: '',
     apartment_number: '',
@@ -2485,6 +2553,7 @@ function BarterAssetModal({ client, store, onClose }: { client: Client; store: S
     equipment_name: '',
     equipment_model: '',
     equipment_year: '',
+    ...(asset ?? {}),
   })
   const [error, setError] = useState('')
   const set = (key: keyof typeof form, value: string | number | string[]) => setForm((current) => ({ ...current, [key]: value }))
@@ -2498,23 +2567,28 @@ function BarterAssetModal({ client, store, onClose }: { client: Client; store: S
       return
     }
     const assetName = form.asset_name || buildAssetName(form)
-    await store.api.addBarterAsset({ ...form, asset_name: assetName, barter_value: effectiveBarterValue, total_paid_value: totalPaidValue, remaining_debt: remainingDebt })
+    if (asset) {
+      await store.api.updateBarterAsset({ ...asset, ...form, asset_name: assetName, barter_value: effectiveBarterValue, total_paid_value: totalPaidValue, remaining_debt: remainingDebt, remaining_amount: Math.max(Number(form.market_value || 0) - Number(form.used_amount || 0), 0), updated_at: asset.updated_at })
+    } else {
+      await store.api.addBarterAsset({ ...form, asset_name: assetName, barter_value: effectiveBarterValue, total_paid_value: totalPaidValue, remaining_debt: remainingDebt })
+    }
     onClose()
   }
 
   return (
-    <Modal title="Бартерный актив" subtitle="Добавьте квартиру, машину, участок, спецтехнику или другое имущество." onClose={onClose} onSubmit={submit}>
+    <Modal title={asset ? 'Изменить бартерный актив' : 'Бартерный актив'} subtitle="Квартира, машина, участок, спецтехника или другое имущество." onClose={onClose} onSubmit={submit}>
       <div className="form-grid three-cols">
         <SelectField label="Тип актива" value={form.type} onChange={(v) => set('type', v as BarterAssetType)} options={Object.entries(barterAssetTypeLabels).map(([value, label]) => ({ value, label }))} />
         <Field label="Название актива" value={form.asset_name} onChange={(v) => set('asset_name', v)} placeholder="Например Toyota Camry 2020" />
         <Field label="Оценочная стоимость (TJS)" value={form.market_value} onChange={(v) => set('market_value', Number(v))} type="number" />
+        <Field label="Номер договора" value={form.contract_number ?? ''} onChange={(v) => set('contract_number', v)} />
         <Field label="Сумма договора / бетона" value={form.linked_contract_amount} onChange={(v) => set('linked_contract_amount', Number(v))} type="number" />
         <Field label="Оплачено наличными" value={form.cash_paid} onChange={(v) => set('cash_paid', Number(v))} type="number" />
         <Field label="Стоимость бартера" value={form.barter_value} onChange={(v) => set('barter_value', Number(v))} type="number" />
         <Field label="Всего оплачено" value={totalPaidValue} onChange={() => undefined} type="number" />
         <Field label="Остаток долга" value={remainingDebt} onChange={() => undefined} type="number" />
         <Field label="Себестоимость (TJS)" value={form.cost_price} onChange={(v) => set('cost_price', Number(v))} type="number" />
-        <SelectField label="Статус сделки" value={form.asset_status} onChange={(v) => set('asset_status', v)} options={Object.entries(barterDealStatusLabel).map(([value, label]) => ({ value, label }))} />
+        <SelectField label="Статус сделки" value={form.asset_status ?? 'active'} onChange={(v) => set('asset_status', v)} options={Object.entries(barterDealStatusLabel).map(([value, label]) => ({ value, label }))} />
         <Field label="Комментарий" value={form.comment} onChange={(v) => set('comment', v)} />
       </div>
 

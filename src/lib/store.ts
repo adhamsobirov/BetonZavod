@@ -955,6 +955,52 @@ export function useCrmStore(enabled = true) {
         await Promise.all(financeRows.map((finance) => saveRow('finance_transactions', finance)))
         notify('Бартерный актив добавлен')
       },
+      updateBarterAsset: async (asset: BarterAsset) => {
+        if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
+        const current = data.barter_assets.find((item) => item.id === asset.id)
+        if (!current) return
+        const usedAmount = Math.max(asset.used_amount ?? current.used_amount ?? 0, 0)
+        const marketValue = Math.max(asset.market_value ?? current.market_value ?? 0, usedAmount)
+        const remainingAmount = Math.max(marketValue - usedAmount, 0)
+        const row: BarterAsset = {
+          ...current,
+          ...asset,
+          market_value: marketValue,
+          barter_value: asset.barter_value ?? marketValue,
+          total_paid_value: (asset.cash_paid ?? 0) + (asset.barter_value ?? marketValue),
+          used_amount: usedAmount,
+          remaining_amount: remainingAmount,
+          status: remainingAmount <= 0 ? 'written_off' : usedAmount > 0 ? 'partial' : 'active',
+          asset_status: remainingAmount <= 0 ? 'completed' : asset.asset_status ?? 'active',
+          updated_at: now(),
+        }
+        setData((state) => ({
+          ...state,
+          barter_assets: state.barter_assets.map((item) => (item.id === row.id ? row : item)),
+          clients: state.clients.map((client) =>
+            client.id === row.client_id
+              ? {
+                  ...client,
+                  total_barter_value: state.barter_assets
+                    .map((item) => (item.id === row.id ? row : item))
+                    .filter((item) => item.client_id === row.client_id)
+                    .reduce((sum, item) => sum + item.market_value, 0),
+                  updated_at: now(),
+                }
+              : client,
+          ),
+        }))
+        await saveRow('barter_assets', row)
+        const client = data.clients.find((item) => item.id === row.client_id)
+        if (client) {
+          const total_barter_value = data.barter_assets
+            .map((item) => (item.id === row.id ? row : item))
+            .filter((item) => item.client_id === row.client_id)
+            .reduce((sum, item) => sum + item.market_value, 0)
+          await saveRow('clients', { ...client, total_barter_value, updated_at: now() })
+        }
+        notify('Бартерный актив обновлен')
+      },
       addCementMovement: async (movement: Omit<CementMovement, 'id' | 'total_cost' | 'created_at' | 'updated_at'>) => {
         if (!canManage) return notify('Недостаточно прав: доступ только для просмотра')
         const row: CementMovement = {
